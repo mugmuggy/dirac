@@ -194,6 +194,7 @@ export class DiracAgent implements acp.Agent {
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
+				loadSession: true,
 				promptCapabilities: {
 					image: true,
 					audio: false,
@@ -307,6 +308,58 @@ export class DiracAgent implements acp.Agent {
 
 		return {
 			sessionId,
+			modes: this.getSessionModeState(session.mode),
+			models: modelState,
+			configOptions,
+		}
+	}
+
+	/**
+	 * Load an existing session from task history.
+	 *
+	 * The ACP LoadSessionRequest sessionId is treated as the historical task ID.
+	 * The task is rehydrated lazily on first prompt to align with the ACP flow.
+	 */
+	async loadSession(params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
+		const sessionId = params.sessionId
+		const existingSession = this.sessions.get(sessionId)
+		if (existingSession) {
+			const modelState = await this.getSessionModelState(existingSession.mode)
+			const configOptions = await this.getSessionConfigOptions(existingSession)
+			return {
+				modes: this.getSessionModeState(existingSession.mode),
+				models: modelState,
+				configOptions,
+			}
+		}
+
+		Logger.debug("[DiracAgent] loadSession called:", { sessionId })
+
+		const controller = new Controller(this.ctx.extensionContext)
+		const history = await controller.getTaskWithId(sessionId)
+		const historyCwd =
+			history.historyItem.cwdOnTaskInitialization || history.historyItem.workspaceRootPath || params.cwd || this.options.cwd
+
+		const session: DiracAcpSession = {
+			sessionId,
+			cwd: historyCwd || process.cwd(),
+			mode: (await controller.getStateToPostToWebview()).mode,
+			createdAt: Date.now(),
+			lastActivityAt: Date.now(),
+			isLoadedFromHistory: true,
+		}
+
+		this.#sessionControllers.set(session, controller)
+		this.sessions.set(sessionId, session)
+		this.sessionStates.set(sessionId, {
+			sessionId,
+			status: AcpSessionStatus.Idle,
+			pendingToolCalls: new Map(),
+		})
+
+		const modelState = await this.getSessionModelState(session.mode)
+		const configOptions = await this.getSessionConfigOptions(session)
+		return {
 			modes: this.getSessionModeState(session.mode),
 			models: modelState,
 			configOptions,

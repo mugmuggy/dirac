@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
 		setPermissionHandler: vi.fn(),
 		initialize: vi.fn(),
 		newSession: vi.fn(),
+		loadSession: vi.fn(),
 		publishSessionSetupUpdates: vi.fn(),
 		emitterForSession: vi.fn(),
 		prompt: vi.fn(),
@@ -43,6 +44,7 @@ describe("AcpAgent", () => {
 		vi.clearAllMocks()
 		vi.useRealTimers()
 		mocks.diracAgentInstance.newSession.mockResolvedValue({ sessionId: "session-1" })
+		mocks.diracAgentInstance.loadSession.mockResolvedValue({})
 		mocks.diracAgentInstance.publishSessionSetupUpdates.mockImplementation(async () => {
 			mocks.callOrder.push("publish")
 		})
@@ -115,5 +117,23 @@ describe("AcpAgent", () => {
 			configId: "mode",
 			value: "plan",
 		})
+	})
+
+	it("publishes setup updates after loadSession", async () => {
+		vi.useFakeTimers()
+		const agent = new AcpAgent(connection, {})
+
+		await expect(agent.loadSession({ sessionId: "session-1", cwd: "/tmp/workspace", mcpServers: [] })).resolves.toEqual({})
+
+		expect(mocks.diracAgentInstance.loadSession).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			cwd: "/tmp/workspace",
+			mcpServers: [],
+		})
+		expect(mocks.callOrder).toEqual(["subscribe"])
+
+		await vi.runAllTimersAsync()
+		expect(mocks.callOrder).toEqual(["subscribe", "publish"])
+		expect(mocks.diracAgentInstance.publishSessionSetupUpdates).toHaveBeenCalledWith("session-1")
 	})
 })
