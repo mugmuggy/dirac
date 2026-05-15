@@ -64,7 +64,6 @@ import { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_LANGUAGE_SETTINGS, getLanguageKey, LanguageDisplay } from "@shared/Languages"
 import {
 	DiracContent,
-	DiracStorageMessage,
 	DiracTextContentBlock,
 	DiracToolResponseContent,
 	DiracUserContent,
@@ -770,14 +769,6 @@ export class Task {
 		return await this.controller.toggleActModeForYoloMode()
 	}
 
-	private async handleHookCancellation(hookName: string, wasCancelled: boolean): Promise<void> {
-		return this.hookManager.handleHookCancellation(hookName, wasCancelled)
-	}
-
-	private calculatePreCompactDeletedRange(apiConversationHistory: DiracStorageMessage[]): [number, number] {
-		return this.apiConversationManager.calculatePreCompactDeletedRange(apiConversationHistory)
-	}
-
 	private async runUserPromptSubmitHook(
 		userContent: DiracContent[],
 		context: "initial_task" | "resume" | "feedback",
@@ -1354,7 +1345,7 @@ ${notice}`
 		userContent = mistakeResult.userContent
 
 		const previousApiReqIndex = findLastIndex(this.messageStateHandler.getDiracMessages(), (m) => m.say === "api_req_started")
-		const isFirstRequest = this.messageStateHandler.getDiracMessages().filter((m) => m.say === "api_req_started").length === 0
+		const isFirstRequest = previousApiReqIndex === -1
 		await this.initializeCheckpoints(isFirstRequest)
 
 		const useCompactPrompt = customPrompt === "compact" && isLocalModel(this.getCurrentProviderInfo())
