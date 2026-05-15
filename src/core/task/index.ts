@@ -1345,7 +1345,7 @@ ${notice}`
 		userContent = mistakeResult.userContent
 
 		const previousApiReqIndex = findLastIndex(this.messageStateHandler.getDiracMessages(), (m) => m.say === "api_req_started")
-		const isFirstRequest = this.messageStateHandler.getDiracMessages().filter((m) => m.say === "api_req_started").length === 0
+		const isFirstRequest = previousApiReqIndex === -1
 		await this.initializeCheckpoints(isFirstRequest)
 
 		const useCompactPrompt = customPrompt === "compact" && isLocalModel(this.getCurrentProviderInfo())
