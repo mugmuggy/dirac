@@ -64,7 +64,6 @@ import { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_LANGUAGE_SETTINGS, getLanguageKey, LanguageDisplay } from "@shared/Languages"
 import {
 	DiracContent,
-	DiracStorageMessage,
 	DiracTextContentBlock,
 	DiracToolResponseContent,
 	DiracUserContent,
@@ -768,14 +767,6 @@ export class Task {
 
 	private async switchToActModeCallback(): Promise<boolean> {
 		return await this.controller.toggleActModeForYoloMode()
-	}
-
-	private async handleHookCancellation(hookName: string, wasCancelled: boolean): Promise<void> {
-		return this.hookManager.handleHookCancellation(hookName, wasCancelled)
-	}
-
-	private calculatePreCompactDeletedRange(apiConversationHistory: DiracStorageMessage[]): [number, number] {
-		return this.apiConversationManager.calculatePreCompactDeletedRange(apiConversationHistory)
 	}
 
 	private async runUserPromptSubmitHook(
