@@ -4,7 +4,8 @@
  * (e.g., when input is piped: echo "..." | diracdev)
  */
 
-import React, { createContext, type ReactNode, useContext } from "react"
+import { useStdin } from "ink"
+import React, { createContext, type ReactNode, useContext, useEffect } from "react"
 
 interface StdinContextValue {
 	/**
@@ -23,8 +24,38 @@ interface StdinProviderProps {
 	isRawModeSupported: boolean
 }
 
+const WindowsSessionRawModeKeeper: React.FC<{ isRawModeSupported: boolean }> = ({ isRawModeSupported }) => {
+	const { setRawMode, stdin } = useStdin()
+
+	useEffect(() => {
+		if (process.platform !== "win32" || !isRawModeSupported) {
+			return
+		}
+
+		// Keep one Ink raw-mode claim alive for the full session so view transitions
+		// do not briefly drop keyboard handling on Windows.
+		setRawMode(true)
+		if (stdin && typeof stdin.resume === "function") {
+			stdin.resume()
+		}
+
+		return () => {
+			// Leave pause/resume restoration to the outer runInkApp cleanup, which
+			// records and restores the original stdin paused state for the session.
+			setRawMode(false)
+		}
+	}, [isRawModeSupported, setRawMode, stdin])
+
+	return null
+}
+
 export const StdinProvider: React.FC<StdinProviderProps> = ({ children, isRawModeSupported }) => {
-	return <StdinContext.Provider value={{ isRawModeSupported }}>{children}</StdinContext.Provider>
+	return (
+		<StdinContext.Provider value={{ isRawModeSupported }}>
+			<WindowsSessionRawModeKeeper isRawModeSupported={isRawModeSupported} />
+			{children}
+		</StdinContext.Provider>
+	)
 }
 
 /**
