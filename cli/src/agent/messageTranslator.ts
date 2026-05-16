@@ -38,6 +38,7 @@ const TOOL_KIND_MAP: Record<string, acp.ToolKind> = {
 	getFunction: "read",
 	getFileSkeleton: "read",
 	findSymbolReferences: "search",
+	execute_command: "execute",
 }
 
 /**
@@ -57,6 +58,24 @@ const BROWSER_ACTION_KIND_MAP: Record<string, acp.ToolKind> = {
  */
 function generateToolCallId(): string {
 	return crypto.randomUUID()
+}
+
+const WEB_SEARCH_MARKER_PATTERN = /^\s*\[Web Search:\s*([\s\S]*?)\]\s*$/
+const WEB_SEARCH_FALLBACK_QUERY = "Searching..."
+
+/**
+ * Parse Codex's text-only web-search marker.
+ *
+ * The marker is emitted by the Responses provider as assistant text. ACP has a
+ * native search tool-call surface, so the ACP adapter converts exact marker
+ * chunks while leaving ordinary prose untouched.
+ */
+export function parseWebSearchMarkerText(text: string | undefined): string | undefined {
+	const match = text?.match(WEB_SEARCH_MARKER_PATTERN)
+	if (!match) return undefined
+
+	const query = match[1]?.trim()
+	return query || WEB_SEARCH_FALLBACK_QUERY
 }
 
 /**
@@ -140,6 +159,10 @@ export interface TranslateMessageOptions {
 	 * This is used when updating a streaming tool call that was already created.
 	 */
 	existingToolCallId?: string
+	/**
+	 * Capabilities advertised by the ACP client during initialize.
+	 */
+	clientCapabilities?: acp.ClientCapabilities
 }
 
 /**
@@ -186,7 +209,7 @@ export function translateMessage(
 function translateSayMessage(
 	message: DiracMessage,
 	sessionState: AcpSessionState,
-	_options?: TranslateMessageOptions,
+	options?: TranslateMessageOptions,
 ): TranslatedMessage {
 	const updates: acp.SessionUpdate[] = []
 	let toolCallId: string | undefined
@@ -194,6 +217,15 @@ function translateSayMessage(
 
 	switch (say) {
 		case "text":
+			// Codex web-search markers → ACP search tool lifecycle.
+			if (message.text) {
+				const webSearchQuery = parseWebSearchMarkerText(message.text)
+				if (webSearchQuery) {
+					toolCallId = translateWebSearchMarkerMessage(webSearchQuery, message, sessionState, updates)
+					break
+				}
+			}
+
 			// Text messages → agent_message_chunk
 			if (message.text) {
 				updates.push({
@@ -221,17 +253,17 @@ function translateSayMessage(
 
 		case "tool":
 			// Tool execution → tool_call with status updates
-			updates.push(...translateToolMessage(message, sessionState))
+			updates.push(...translateToolMessage(message, sessionState, options?.clientCapabilities))
 			break
 
 		case "command":
 			// Command execution → tool_call (kind: execute)
-			updates.push(...translateCommandMessage(message, sessionState))
+			updates.push(...translateCommandMessage(message, sessionState, options?.clientCapabilities))
 			break
 
 		case "command_output":
 			// Command output → tool_call_update with terminal content
-			updates.push(...translateCommandOutputMessage(message, sessionState))
+			updates.push(...translateCommandOutputMessage(message, sessionState, options?.clientCapabilities))
 			break
 
 		case "completion_result":
@@ -366,6 +398,49 @@ function translateSayMessage(
 	}
 
 	return { updates, toolCallId }
+}
+
+function translateWebSearchMarkerMessage(
+	query: string,
+	message: DiracMessage,
+	sessionState: AcpSessionState,
+	updates: acp.SessionUpdate[],
+): string {
+	const toolCallId = sessionState.currentToolCallId || generateToolCallId()
+
+	const isExistingToolCall = !!sessionState.currentToolCallId
+
+	if (!isExistingToolCall) {
+		sessionState.currentToolCallId = toolCallId
+		updates.push({
+			sessionUpdate: "tool_call",
+			toolCallId,
+			title: `Web Search: ${query}`,
+			kind: "search",
+			status: "in_progress",
+			rawInput: { query },
+		})
+	} else if (message.partial) {
+		updates.push({
+			sessionUpdate: "tool_call_update",
+			toolCallId,
+			status: "in_progress",
+			rawInput: { query },
+		})
+	}
+
+	if (!message.partial) {
+		updates.push({
+			sessionUpdate: "tool_call_update",
+			toolCallId,
+			status: "completed",
+			rawInput: { query },
+			rawOutput: { query },
+		})
+		sessionState.currentToolCallId = undefined
+	}
+
+	return toolCallId
 }
 
 /**
@@ -595,7 +670,11 @@ function translateAskMessage(
 /**
  * Translate a tool message to ACP tool_call updates.
  */
-function translateToolMessage(message: DiracMessage, sessionState: AcpSessionState): acp.SessionUpdate[] {
+function translateToolMessage(
+	message: DiracMessage,
+	sessionState: AcpSessionState,
+	clientCapabilities?: acp.ClientCapabilities,
+): acp.SessionUpdate[] {
 	const updates: acp.SessionUpdate[] = []
 
 	if (!message.text) return updates
@@ -678,25 +757,75 @@ function translateToolMessage(message: DiracMessage, sessionState: AcpSessionSta
 			sessionState.currentToolCallId = undefined
 		}
 	} catch {
-		// If parsing fails, treat as plain text
-		updates.push({
-			sessionUpdate: "agent_message_chunk",
-			content: { type: "text", text: message.text },
-		})
+		const commandUpdate = translatePlainCommandToolMessage(message, sessionState, clientCapabilities)
+		if (commandUpdate) {
+			updates.push(commandUpdate)
+		} else {
+			// If parsing fails, treat as plain text
+			updates.push({
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: message.text },
+			})
+		}
 	}
 
 	return updates
 }
 
+function translatePlainCommandToolMessage(
+	message: DiracMessage,
+	sessionState: AcpSessionState,
+	clientCapabilities?: acp.ClientCapabilities,
+): acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" } | undefined {
+	const command = extractCommandFromText(message.text)
+	const toolCallId = sessionState.currentToolCallId
+	if (!command || !toolCallId) return undefined
+
+	const pendingToolCall = sessionState.pendingToolCalls.get(toolCallId)
+	if (!pendingToolCall || pendingToolCall.kind !== "execute") return undefined
+
+	pendingToolCall.status = "in_progress"
+	pendingToolCall.rawInput = { ...(pendingToolCall.rawInput as Record<string, unknown> | undefined), command }
+	pendingToolCall.title = buildCommandTitle(command)
+	const supportsTerminalOutput = clientSupportsTerminalOutput(clientCapabilities)
+
+	return {
+		sessionUpdate: "tool_call_update",
+		toolCallId,
+		status: "in_progress",
+		rawInput: { command },
+		content: supportsTerminalOutput
+			? [{ type: "terminal", terminalId: toolCallId }]
+			: [
+					{
+						type: "content",
+						content: { type: "text", text: `$ ${command}` },
+					},
+				],
+		_meta: supportsTerminalOutput
+			? {
+					terminal_info: {
+						terminal_id: toolCallId,
+					},
+				}
+			: undefined,
+	}
+}
+
 /**
  * Translate a command message to ACP tool_call.
  */
-function translateCommandMessage(message: DiracMessage, sessionState: AcpSessionState): acp.SessionUpdate[] {
+function translateCommandMessage(
+	message: DiracMessage,
+	sessionState: AcpSessionState,
+	clientCapabilities?: acp.ClientCapabilities,
+): acp.SessionUpdate[] {
 	const updates: acp.SessionUpdate[] = []
 
 	const command = extractCommandFromText(message.text)
 	const toolCallId = generateToolCallId()
 	sessionState.currentToolCallId = toolCallId
+	const supportsTerminalOutput = clientSupportsTerminalOutput(clientCapabilities)
 
 	updates.push({
 		sessionUpdate: "tool_call",
@@ -707,13 +836,21 @@ function translateCommandMessage(message: DiracMessage, sessionState: AcpSession
 		// event should stay in progress even for non-partial messages.
 		status: "in_progress",
 		rawInput: { command },
-		// Use text content to display the command being executed
-		content: [
-			{
-				type: "content",
-				content: { type: "text", text: `$ ${command}` },
-			},
-		],
+		content: supportsTerminalOutput
+			? [{ type: "terminal", terminalId: toolCallId }]
+			: [
+					{
+						type: "content",
+						content: { type: "text", text: `$ ${command}` },
+					},
+				],
+		_meta: supportsTerminalOutput
+			? {
+					terminal_info: {
+						terminal_id: toolCallId,
+					},
+				}
+			: undefined,
 	})
 
 	return updates
@@ -722,15 +859,55 @@ function translateCommandMessage(message: DiracMessage, sessionState: AcpSession
 /**
  * Translate command output to ACP tool_call_update.
  */
-function translateCommandOutputMessage(message: DiracMessage, sessionState: AcpSessionState): acp.SessionUpdate[] {
+function translateCommandOutputMessage(
+	message: DiracMessage,
+	sessionState: AcpSessionState,
+	clientCapabilities?: acp.ClientCapabilities,
+): acp.SessionUpdate[] {
 	const updates: acp.SessionUpdate[] = []
 
 	if (sessionState.currentToolCallId) {
+		const toolCallId = sessionState.currentToolCallId
 		const status: acp.ToolCallStatus = message.commandCompleted ? "completed" : "in_progress"
+		const supportsTerminalOutput = clientSupportsTerminalOutput(clientCapabilities)
+
+		if (supportsTerminalOutput) {
+			if (message.text) {
+				updates.push({
+					sessionUpdate: "tool_call_update",
+					toolCallId,
+					_meta: {
+						terminal_output: {
+							terminal_id: toolCallId,
+							data: message.text,
+						},
+					},
+				})
+			}
+
+			if (message.commandCompleted) {
+				updates.push({
+					sessionUpdate: "tool_call_update",
+					toolCallId,
+					status,
+					rawOutput: message.text ? { output: message.text } : undefined,
+					_meta: {
+						terminal_exit: {
+							terminal_id: toolCallId,
+							exit_code: 0,
+							signal: null,
+						},
+					},
+				})
+				sessionState.currentToolCallId = undefined
+			}
+
+			return updates
+		}
 
 		updates.push({
 			sessionUpdate: "tool_call_update",
-			toolCallId: sessionState.currentToolCallId,
+			toolCallId,
 			status,
 			// Store output in rawOutput and optionally as text content
 			rawOutput: message.text ? { output: message.text } : undefined,
@@ -738,7 +915,7 @@ function translateCommandOutputMessage(message: DiracMessage, sessionState: AcpS
 				? [
 						{
 							type: "content",
-							content: { type: "text", text: message.text },
+							content: { type: "text", text: formatCommandOutputContent(message.text) },
 						},
 					]
 				: undefined,
@@ -758,6 +935,14 @@ function translateCommandOutputMessage(message: DiracMessage, sessionState: AcpS
 	}
 
 	return updates
+}
+
+function clientSupportsTerminalOutput(clientCapabilities?: acp.ClientCapabilities): boolean {
+	return clientCapabilities?._meta?.terminal_output === true
+}
+
+function formatCommandOutputContent(output: string): string {
+	return `\`\`\`console\n${output.trimEnd()}\n\`\`\``
 }
 
 /**
@@ -923,11 +1108,15 @@ function parseToolInfo(text: string): { title: string; kind: acp.ToolKind; path?
  * @param sessionState - The current session state
  * @returns Combined array of ACP session updates
  */
-export function translateMessages(messages: DiracMessage[], sessionState: AcpSessionState): acp.SessionUpdate[] {
+export function translateMessages(
+	messages: DiracMessage[],
+	sessionState: AcpSessionState,
+	options?: TranslateMessageOptions,
+): acp.SessionUpdate[] {
 	const allUpdates: acp.SessionUpdate[] = []
 
 	for (const message of messages) {
-		const result = translateMessage(message, sessionState)
+		const result = translateMessage(message, sessionState, options)
 		allUpdates.push(...result.updates)
 	}
 
