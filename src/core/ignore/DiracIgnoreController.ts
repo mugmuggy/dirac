@@ -42,7 +42,6 @@ export const DEFAULT_IGNORE_PATTERNS = [
 	"target",
 	"bin",
 	"obj",
-	"generated",
 	"gen",
 	"CMakeFiles",
 	".gradle",
