@@ -1,8 +1,9 @@
 import { Text } from "ink"
 import { render } from "ink-testing-library"
-import React from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { StdinProvider } from "./StdinContext"
+// biome-ignore lint/correctness/noUnusedImports: React is needed for JSX transform
+import React from "react"
 
 const inkMocks = vi.hoisted(() => ({
 	resume: vi.fn(),
