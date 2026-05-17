@@ -227,6 +227,99 @@ describe("translateMessage - say messages", () => {
 			expect((chunk.content as acp.TextContent).text).toBe("Hello, this is a response.")
 		})
 
+		it("should translate Codex web search marker text to a completed search tool call", () => {
+			const message = createDiracMessage({
+				type: "say",
+				say: "text",
+				text: "[Web Search: snow model albedo]",
+			})
+
+			const result = translateMessage(message, sessionState)
+
+			expect(result.updates).toHaveLength(2)
+			expect(result.updates[0].sessionUpdate).toBe("tool_call")
+			expect(result.updates[1].sessionUpdate).toBe("tool_call_update")
+
+			const toolCall = result.updates[0] as acp.ToolCall & { sessionUpdate: "tool_call" }
+			assertValidToolCall(toolCall)
+			expect(toolCall.kind).toBe("search")
+			expect(toolCall.status).toBe("in_progress")
+			expect(toolCall.title).toBe("Web Search: snow model albedo")
+			expect(toolCall.rawInput).toEqual({ query: "snow model albedo" })
+
+			const toolUpdate = result.updates[1] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			assertValidToolCallUpdate(toolUpdate)
+			expect(toolUpdate.toolCallId).toBe(toolCall.toolCallId)
+			expect(toolUpdate.status).toBe("completed")
+			expect(toolUpdate.rawOutput).toEqual({ query: "snow model albedo" })
+			expect(sessionState.currentToolCallId).toBeUndefined()
+		})
+
+		it("should leave prose containing a web search marker as assistant text", () => {
+			const text = "I checked [Web Search: snow model albedo] and found relevant papers."
+			const message = createDiracMessage({
+				type: "say",
+				say: "text",
+				text,
+			})
+
+			const result = translateMessage(message, sessionState)
+
+			expect(result.updates).toHaveLength(1)
+			expect(result.updates[0].sessionUpdate).toBe("agent_message_chunk")
+			const chunk = result.updates[0] as acp.ContentChunk & { sessionUpdate: "agent_message_chunk" }
+			expect((chunk.content as acp.TextContent).text).toBe(text)
+		})
+
+		it("should use fallback query text for empty web search markers", () => {
+			const message = createDiracMessage({
+				type: "say",
+				say: "text",
+				text: "\n[Web Search: ]\n",
+			})
+
+			const result = translateMessage(message, sessionState)
+
+			expect(result.updates).toHaveLength(2)
+			const toolCall = result.updates[0] as acp.ToolCall & { sessionUpdate: "tool_call" }
+			expect(toolCall.title).toBe("Web Search: Searching...")
+			expect(toolCall.rawInput).toEqual({ query: "Searching..." })
+			const toolUpdate = result.updates[1] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(toolUpdate.rawOutput).toEqual({ query: "Searching..." })
+		})
+
+		it("should keep partial web search marker tool calls in progress until the final marker arrives", () => {
+			const partialMessage = createDiracMessage({
+				type: "say",
+				say: "text",
+				text: "[Web Search: snow model albedo]",
+				partial: true,
+			})
+
+			const partialResult = translateMessage(partialMessage, sessionState)
+
+			expect(partialResult.updates).toHaveLength(1)
+			const toolCall = partialResult.updates[0] as acp.ToolCall & { sessionUpdate: "tool_call" }
+			expect(toolCall.status).toBe("in_progress")
+			expect(sessionState.currentToolCallId).toBe(toolCall.toolCallId)
+
+			const finalMessage = createDiracMessage({
+				type: "say",
+				say: "text",
+				text: "[Web Search: snow model albedo]",
+				partial: false,
+			})
+
+			const finalResult = translateMessage(finalMessage, sessionState)
+
+			expect(finalResult.updates).toHaveLength(1)
+			expect(finalResult.updates[0].sessionUpdate).toBe("tool_call_update")
+			const completedUpdate = finalResult.updates[0] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(completedUpdate.toolCallId).toBe(toolCall.toolCallId)
+			expect(completedUpdate.status).toBe("completed")
+			expect(sessionState.currentToolCallId).toBeUndefined()
+		})
+
 		it("should not generate update for empty text", () => {
 			const message = createDiracMessage({
 				type: "say",
@@ -374,10 +467,34 @@ describe("translateMessage - say messages", () => {
 			const call = toolCall as acp.ToolCall & { sessionUpdate: "tool_call" }
 			expect(call.kind).toBe("execute")
 			expect(call.title).toContain("npm install")
+			expect(call.status).toBe("in_progress")
 			expect(call.rawInput).toEqual({ command: "npm install" })
 
 			// Should set currentToolCallId
 			expect(sessionState.currentToolCallId).toBe(call.toolCallId)
+		})
+
+		it("should use terminal content when the client supports terminal output", () => {
+			const message = createDiracMessage({
+				type: "say",
+				say: "command",
+				text: "npm test",
+			})
+
+			const result = translateMessage(message, sessionState, {
+				clientCapabilities: { _meta: { terminal_output: true } },
+			})
+
+			const toolCall = result.updates.find((u) => u.sessionUpdate === "tool_call") as acp.ToolCall & {
+				sessionUpdate: "tool_call"
+			}
+
+			expect(toolCall.content).toEqual([{ type: "terminal", terminalId: toolCall.toolCallId }])
+			expect((toolCall as any)._meta).toEqual({
+				terminal_info: {
+					terminal_id: toolCall.toolCallId,
+				},
+			})
 		})
 
 		it("should truncate long command titles", () => {
@@ -420,6 +537,13 @@ describe("translateMessage - say messages", () => {
 			expect(update.toolCallId).toBe("command-tool-123")
 			expect(update.status).toBe("in_progress")
 			expect(update.rawOutput).toEqual({ output: "added 5 packages" })
+			expect(update.content).toEqual([
+				{
+					type: "content",
+					content: { type: "text", text: "```console\nadded 5 packages\n```" },
+				},
+			])
+			expect((update as any)._meta).toBeUndefined()
 		})
 
 		it("should mark tool as completed when commandCompleted is true", () => {
@@ -440,6 +564,74 @@ describe("translateMessage - say messages", () => {
 			expect(toolUpdate.status).toBe("completed")
 
 			// Should clear currentToolCallId
+			expect(sessionState.currentToolCallId).toBeUndefined()
+		})
+
+		it("should stream terminal output metadata for terminal-capable clients", () => {
+			sessionState.currentToolCallId = "command-tool-terminal"
+
+			const result = translateMessage(
+				createDiracMessage({
+					type: "say",
+					say: "command_output",
+					text: "line 1\n",
+					commandCompleted: false,
+				}),
+				sessionState,
+				{ clientCapabilities: { _meta: { terminal_output: true } } },
+			)
+
+			expect(result.updates).toHaveLength(1)
+			const update = result.updates[0] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(update.sessionUpdate).toBe("tool_call_update")
+			expect(update.toolCallId).toBe("command-tool-terminal")
+			expect(update.status).toBeUndefined()
+			expect(update.content).toBeUndefined()
+			expect(update.rawOutput).toBeUndefined()
+			expect((update as any)._meta).toEqual({
+				terminal_output: {
+					terminal_id: "command-tool-terminal",
+					data: "line 1\n",
+				},
+			})
+			expect(sessionState.currentToolCallId).toBe("command-tool-terminal")
+		})
+
+		it("should send terminal exit metadata separately and clear currentToolCallId", () => {
+			sessionState.currentToolCallId = "command-tool-terminal"
+
+			const result = translateMessage(
+				createDiracMessage({
+					type: "say",
+					say: "command_output",
+					text: "tests passed",
+					commandCompleted: true,
+				}),
+				sessionState,
+				{ clientCapabilities: { _meta: { terminal_output: true } } },
+			)
+
+			expect(result.updates).toHaveLength(2)
+			const outputUpdate = result.updates[0] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect((outputUpdate as any)._meta).toEqual({
+				terminal_output: {
+					terminal_id: "command-tool-terminal",
+					data: "tests passed",
+				},
+			})
+			expect(outputUpdate.status).toBeUndefined()
+
+			const exitUpdate = result.updates[1] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(exitUpdate.toolCallId).toBe("command-tool-terminal")
+			expect(exitUpdate.status).toBe("completed")
+			expect(exitUpdate.rawOutput).toEqual({ output: "tests passed" })
+			expect((exitUpdate as any)._meta).toEqual({
+				terminal_exit: {
+					terminal_id: "command-tool-terminal",
+					exit_code: 0,
+					signal: null,
+				},
+			})
 			expect(sessionState.currentToolCallId).toBeUndefined()
 		})
 
@@ -478,8 +670,39 @@ describe("translateMessage - say messages", () => {
 
 			const call = toolCall as acp.ToolCall & { sessionUpdate: "tool_call" }
 			expect(call.kind).toBe("read")
+			expect(call.status).toBe("in_progress")
+			expect(call.title).toContain("Read")
 			expect(call.title).toContain("/src/index.ts")
 			expect(call.locations).toContainEqual({ path: "/src/index.ts" })
+
+			const toolUpdate = result.updates.find((u) => u.sessionUpdate === "tool_call_update")
+			expect(toolUpdate).toBeDefined()
+			assertValidToolCallUpdate(toolUpdate!)
+			expect((toolUpdate as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }).status).toBe("completed")
+		})
+
+		it("should build read titles from paths when path is omitted", () => {
+			const toolInfo = {
+				tool: "readFile",
+				paths: ["/src/a.ts", "/src/b.ts"],
+				readFileResults: [
+					{ path: "/src/a.ts", status: "success", label: "Read full file" },
+					{ path: "/src/b.ts", status: "success", label: "Read full file" },
+				],
+			}
+			const message = createDiracMessage({
+				type: "say",
+				say: "tool",
+				text: JSON.stringify(toolInfo),
+			})
+
+			const result = translateMessage(message, sessionState)
+			const toolCall = result.updates.find((u) => u.sessionUpdate === "tool_call") as acp.ToolCall & {
+				sessionUpdate: "tool_call"
+			}
+
+			expect(toolCall.title).toContain("/src/a.ts")
+			expect(toolCall.title).toContain("/src/b.ts")
 		})
 
 		it("should translate say:tool for file edit operations", () => {
@@ -506,6 +729,8 @@ describe("translateMessage - say messages", () => {
 
 			const call = toolCall as acp.ToolCall & { sessionUpdate: "tool_call" }
 			expect(call.kind).toBe("edit")
+			expect(call.status).toBe("in_progress")
+			expect(call.title).toContain("Edit")
 			expect(call.title).toContain("/src/app.ts")
 
 			// Should have diff content
@@ -531,7 +756,8 @@ describe("translateMessage - say messages", () => {
 				sessionUpdate: "tool_call"
 			}
 			expect(toolCall.kind).toBe("edit")
-			expect(toolCall.title).toContain("Create file")
+			expect(toolCall.status).toBe("in_progress")
+			expect(toolCall.title).toContain("Create")
 		})
 
 		it("should translate say:tool for file deletion", () => {
@@ -551,6 +777,8 @@ describe("translateMessage - say messages", () => {
 				sessionUpdate: "tool_call"
 			}
 			expect(toolCall.kind).toBe("delete")
+			expect(toolCall.status).toBe("in_progress")
+			expect(toolCall.title).toContain("Delete")
 		})
 
 		it("should translate say:tool for search operations", () => {
@@ -572,6 +800,8 @@ describe("translateMessage - say messages", () => {
 				sessionUpdate: "tool_call"
 			}
 			expect(toolCall.kind).toBe("search")
+			expect(toolCall.status).toBe("in_progress")
+			expect(toolCall.title).toContain("Search")
 			expect(toolCall.title).toContain("TODO|FIXME")
 		})
 
@@ -630,6 +860,141 @@ describe("translateMessage - say messages", () => {
 			const messageChunk = result.updates.find((u) => u.sessionUpdate === "agent_message_chunk")
 			expect(messageChunk).toBeDefined()
 		})
+
+		it("should advance partial ask:tool command previews when an auto-approved say:tool command arrives", () => {
+			const toolInfo = {
+				tool: "execute_command",
+				command: "npm test",
+			}
+			const askMessage = createDiracMessage({
+				type: "ask",
+				ask: "tool",
+				text: JSON.stringify(toolInfo),
+				partial: true,
+			})
+
+			const askResult = translateMessage(askMessage, sessionState)
+			const toolCall = askResult.updates.find((u) => u.sessionUpdate === "tool_call") as acp.ToolCall & {
+				sessionUpdate: "tool_call"
+			}
+
+			expect(askResult.requiresPermission).toBe(false)
+			expect(toolCall.kind).toBe("execute")
+			expect(toolCall.status).toBe("pending")
+			expect(sessionState.currentToolCallId).toBe(toolCall.toolCallId)
+
+			const sayMessage = createDiracMessage({
+				type: "say",
+				say: "tool",
+				text: "npm test",
+			})
+
+			const sayResult = translateMessage(sayMessage, sessionState)
+
+			expect(sayResult.requiresPermission).toBe(false)
+			expect(sayResult.permissionRequest).toBeUndefined()
+			expect(sayResult.updates).toHaveLength(1)
+			const update = sayResult.updates[0] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(update.sessionUpdate).toBe("tool_call_update")
+			expect(update.toolCallId).toBe(toolCall.toolCallId)
+			expect(update.status).toBe("in_progress")
+			expect(update.rawInput).toEqual({ command: "npm test" })
+			expect(sessionState.pendingToolCalls.get(toolCall.toolCallId)?.status).toBe("in_progress")
+		})
+
+		it("should let auto-approved command output complete the previewed command tool call", () => {
+			const askResult = translateMessage(
+				createDiracMessage({
+					type: "ask",
+					ask: "tool",
+					text: JSON.stringify({ tool: "execute_command", command: "npm test" }),
+					partial: true,
+				}),
+				sessionState,
+			)
+			const toolCall = askResult.updates[0] as acp.ToolCall & { sessionUpdate: "tool_call" }
+
+			translateMessage(
+				createDiracMessage({
+					type: "say",
+					say: "tool",
+					text: "npm test",
+				}),
+				sessionState,
+			)
+
+			const outputResult = translateMessage(
+				createDiracMessage({
+					type: "say",
+					say: "command_output",
+					text: "tests passed",
+					commandCompleted: true,
+				}),
+				sessionState,
+			)
+
+			const update = outputResult.updates[0] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(update.sessionUpdate).toBe("tool_call_update")
+			expect(update.toolCallId).toBe(toolCall.toolCallId)
+			expect(update.status).toBe("completed")
+			expect(update.rawOutput).toEqual({ output: "tests passed" })
+			expect(sessionState.currentToolCallId).toBeUndefined()
+		})
+
+		it("should let terminal-capable auto-approved command output complete the previewed command tool call", () => {
+			const clientOptions = { clientCapabilities: { _meta: { terminal_output: true } } }
+			const askResult = translateMessage(
+				createDiracMessage({
+					type: "ask",
+					ask: "tool",
+					text: JSON.stringify({ tool: "execute_command", command: "npm test" }),
+					partial: true,
+				}),
+				sessionState,
+				clientOptions,
+			)
+			const toolCall = askResult.updates[0] as acp.ToolCall & { sessionUpdate: "tool_call" }
+
+			const commandPreview = translateMessage(
+				createDiracMessage({
+					type: "say",
+					say: "tool",
+					text: "npm test",
+				}),
+				sessionState,
+				clientOptions,
+			)
+			const previewUpdate = commandPreview.updates[0] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(previewUpdate.toolCallId).toBe(toolCall.toolCallId)
+			expect(previewUpdate.content).toEqual([{ type: "terminal", terminalId: toolCall.toolCallId }])
+
+			const outputResult = translateMessage(
+				createDiracMessage({
+					type: "say",
+					say: "command_output",
+					text: "tests passed",
+					commandCompleted: true,
+				}),
+				sessionState,
+				clientOptions,
+			)
+
+			const outputUpdate = outputResult.updates[0] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			const exitUpdate = outputResult.updates[1] as acp.ToolCallUpdate & { sessionUpdate: "tool_call_update" }
+			expect(outputUpdate.toolCallId).toBe(toolCall.toolCallId)
+			expect((outputUpdate as any)._meta?.terminal_output).toEqual({
+				terminal_id: toolCall.toolCallId,
+				data: "tests passed",
+			})
+			expect(exitUpdate.toolCallId).toBe(toolCall.toolCallId)
+			expect(exitUpdate.status).toBe("completed")
+			expect((exitUpdate as any)._meta?.terminal_exit).toEqual({
+				terminal_id: toolCall.toolCallId,
+				exit_code: 0,
+				signal: null,
+			})
+			expect(sessionState.currentToolCallId).toBeUndefined()
+		})
 	})
 
 	describe("browser action messages", () => {
@@ -652,6 +1017,7 @@ describe("translateMessage - say messages", () => {
 
 			const call = toolCall as acp.ToolCall & { sessionUpdate: "tool_call" }
 			expect(call.kind).toBe("execute")
+			expect(call.status).toBe("in_progress")
 			expect(call.title).toContain("launch")
 		})
 
@@ -672,6 +1038,7 @@ describe("translateMessage - say messages", () => {
 			expect(toolCall).toBeDefined()
 
 			const call = toolCall as acp.ToolCall & { sessionUpdate: "tool_call" }
+			expect(call.status).toBe("in_progress")
 			expect(call.title).toContain("click")
 		})
 
@@ -1297,13 +1664,13 @@ describe("tool title building", () => {
 	})
 
 	const titleCases: Array<{ tool: string; path?: string; regex?: string; expectedContains: string }> = [
-		{ tool: "readFile", path: "/src/index.ts", expectedContains: "/src/index.ts" },
-		{ tool: "editedExistingFile", path: "/src/app.ts", expectedContains: "/src/app.ts" },
-		{ tool: "newFileCreated", path: "/src/new.ts", expectedContains: "/src/new.ts" },
-		{ tool: "fileDeleted", path: "/old.ts", expectedContains: "/old.ts" },
-		{ tool: "listFilesTopLevel", path: "/src", expectedContains: "/src" },
-		{ tool: "listFilesRecursive", path: "/src", expectedContains: "/src" },
-		{ tool: "searchFiles", regex: "TODO", expectedContains: "TODO" },
+		{ tool: "readFile", path: "/src/index.ts", expectedContains: "Read /src/index.ts" },
+		{ tool: "editedExistingFile", path: "/src/app.ts", expectedContains: "Edit /src/app.ts" },
+		{ tool: "newFileCreated", path: "/src/new.ts", expectedContains: "Create /src/new.ts" },
+		{ tool: "fileDeleted", path: "/old.ts", expectedContains: "Delete /old.ts" },
+		{ tool: "listFilesTopLevel", path: "/src", expectedContains: "List /src" },
+		{ tool: "listFilesRecursive", path: "/src", expectedContains: "List /src" },
+		{ tool: "searchFiles", regex: "TODO", expectedContains: "Search TODO" },
 	]
 
 	titleCases.forEach(({ tool, path, regex, expectedContains }) => {
@@ -1322,6 +1689,27 @@ describe("tool title building", () => {
 
 			expect(toolCall.title.toLowerCase()).toContain(expectedContains.toLowerCase())
 		})
+	})
+
+	it("should use regular tool titles even when MCP-style identifiers are present", () => {
+		const toolInfo = {
+			tool: "readFile",
+			serverName: "serena",
+			toolName: "activate_project",
+			path: "/repo",
+		}
+		const message = createDiracMessage({
+			type: "say",
+			say: "tool",
+			text: JSON.stringify(toolInfo),
+		})
+
+		const result = translateMessage(message, sessionState)
+		const toolCall = result.updates.find((u) => u.sessionUpdate === "tool_call") as acp.ToolCall & {
+			sessionUpdate: "tool_call"
+		}
+
+		expect(toolCall.title).toBe("Read /repo")
 	})
 })
 

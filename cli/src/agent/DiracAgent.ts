@@ -42,10 +42,11 @@ import { fetchOpenRouterModels, usesOpenRouterModels } from "../utils/openrouter
 import { getProviderLabel, getValidCliProviders, isValidCliProvider } from "../utils/providers.js"
 import { CliContextResult, initializeCliContext } from "../vscode-context.js"
 import { DiracSessionEmitter } from "./DiracSessionEmitter.js"
-import { translateMessage } from "./messageTranslator.js"
+import { parseWebSearchMarkerText, translateMessage } from "./messageTranslator.js"
 import { handlePermissionResponse } from "./permissionHandler.js"
 import type { DiracAcpSession, DiracAgentOptions, PermissionHandler } from "./public-types.js"
 import { AcpSessionStatus } from "./public-types.js"
+import { ACP_REVIEW_COMMANDS, handleAcpReviewCommand } from "./review.js"
 import { type AcpSessionState } from "./types.js"
 
 const ACP_MODE_OPTIONS: acp.SessionConfigSelectOption[] = [
@@ -795,6 +796,21 @@ export class DiracAgent implements acp.Agent {
 				.filter((block): block is acp.EmbeddedResource & { type: "resource" } => block.type === "resource")
 				.map((block) => block.resource.uri)
 
+			const interceptedReviewResponse =
+				imageContent.length === 0 && fileResources.length === 0
+					? await handleAcpReviewCommand({
+							commandText: textContent,
+							controller,
+							sessionId: params.sessionId,
+							cwd: session.cwd,
+							emitSessionUpdate: this.emitSessionUpdate.bind(this),
+						})
+					: null
+
+			if (interceptedReviewResponse) {
+				return interceptedReviewResponse
+			}
+
 			// Determine if this is a new task, continuation, or loaded session resume
 			const hasActiveTask = controller.task !== undefined
 			const isLoadedSession = session.isLoadedFromHistory === true
@@ -1083,8 +1099,10 @@ export class DiracAgent implements acp.Agent {
 				(message.say === "text" || message.say === "reasoning" || message.say === "completion_result")) ||
 			(message.type === "ask" &&
 				(message.ask === "followup" || message.ask === "plan_mode_respond" || message.ask === "completion_result"))
+		const isWebSearchMarkerMessage =
+			message.type === "say" && message.say === "text" && parseWebSearchMarkerText(message.text) !== undefined
 
-		if (isTextStreamingMessage && message.text) {
+		if (isTextStreamingMessage && message.text && !isWebSearchMarkerMessage) {
 			// Extract the actual text content for JSON-wrapped messages
 			// plan_mode_respond uses { response: string, options?: string[] }
 			// followup uses { question: string, options?: string[] }
@@ -1139,6 +1157,7 @@ export class DiracAgent implements acp.Agent {
 
 			const result = translateMessage(message, sessionState, {
 				existingToolCallId,
+				clientCapabilities: this.clientCapabilities,
 			})
 
 			// Send all updates produced by the translator
@@ -1301,6 +1320,12 @@ export class DiracAgent implements acp.Agent {
 					hint: cmd.description,
 				},
 			}))
+
+			for (const reviewCommand of ACP_REVIEW_COMMANDS) {
+				if (!availableCommands.some((cmd) => cmd.name === reviewCommand.name)) {
+					availableCommands.push(reviewCommand)
+				}
+			}
 
 			// Send the available_commands_update notification
 			await this.emitSessionUpdate(sessionId, {
