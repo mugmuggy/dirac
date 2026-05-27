@@ -53,6 +53,48 @@ const BROWSER_ACTION_KIND_MAP: Record<string, acp.ToolKind> = {
 	close: "execute",
 }
 
+const ALWAYS_REQUIRE_PERMISSION_TOOLS = new Set([
+	"editedExistingFile",
+	"newFileCreated",
+	"fileDeleted",
+	"editFile",
+	"edit_file",
+	"replaceSymbol",
+	"replace_symbol",
+	"renameSymbol",
+	"rename_symbol",
+	"executeCommand",
+	"execute_command",
+	"subagent",
+	"browser_action",
+	"browser_action_result",
+])
+
+const READ_ONLY_NO_PERMISSION_TOOLS = new Set([
+	"readFile",
+	"read_file",
+	"readLineRange",
+	"read_line_range",
+	"listFilesTopLevel",
+	"list_files_top_level",
+	"listFilesRecursive",
+	"list_files_recursive",
+	"listCodeDefinitionNames",
+	"searchFiles",
+	"search_files",
+	"summarizeTask",
+	"useSkill",
+	"listSkills",
+	"getFunction",
+	"get_function",
+	"getFileSkeleton",
+	"get_file_skeleton",
+	"findSymbolReferences",
+	"find_symbol_references",
+	"diagnosticsScan",
+	"diagnostics_scan",
+])
+
 /**
  * Generate a unique tool call ID.
  */
@@ -560,14 +602,16 @@ function translateAskMessage(
 							existingToolCall.rawInput = toolInfo?.input
 							existingToolCall.locations = toolInfo?.path ? [{ path: toolInfo.path }] : undefined
 							existingToolCall.title = toolInfo?.title || existingToolCall.title
-							requiresPermission = true
-							permissionRequest = {
-								toolCall: existingToolCall,
-								options: [
-									{ kind: "allow_once", optionId: "allow_once", name: "Allow Once" },
-									{ kind: "allow_always", optionId: "allow_always", name: "Always Allow" },
-									{ kind: "reject_once", optionId: "reject_once", name: "Reject" },
-								],
+							if (toolInfo ? toolAskRequiresPermission(toolInfo.tool) : true) {
+								requiresPermission = true
+								permissionRequest = {
+									toolCall: existingToolCall,
+									options: [
+										{ kind: "allow_once", optionId: "allow_once", name: "Allow Once" },
+										{ kind: "allow_always", optionId: "allow_always", name: "Always Allow" },
+										{ kind: "reject_once", optionId: "reject_once", name: "Reject" },
+									],
+								}
 							}
 						}
 					}
@@ -591,14 +635,16 @@ function translateAskMessage(
 
 					// Only request permission for non-partial messages (complete tool calls)
 					if (!message.partial) {
-						requiresPermission = true
-						permissionRequest = {
-							toolCall,
-							options: [
-								{ kind: "allow_once", optionId: "allow_once", name: "Allow Once" },
-								{ kind: "allow_always", optionId: "allow_always", name: "Always Allow" },
-								{ kind: "reject_once", optionId: "reject_once", name: "Reject" },
-							],
+						if (toolInfo ? toolAskRequiresPermission(toolInfo.tool) : true) {
+							requiresPermission = true
+							permissionRequest = {
+								toolCall,
+								options: [
+									{ kind: "allow_once", optionId: "allow_once", name: "Allow Once" },
+									{ kind: "allow_always", optionId: "allow_always", name: "Always Allow" },
+									{ kind: "reject_once", optionId: "reject_once", name: "Reject" },
+								],
+							}
 						}
 					}
 				}
@@ -1087,7 +1133,7 @@ function extractCommandFromText(text?: string): string {
 /**
  * Parse tool info from message text.
  */
-function parseToolInfo(text: string): { title: string; kind: acp.ToolKind; path?: string; input?: unknown } | null {
+function parseToolInfo(text: string): { title: string; kind: acp.ToolKind; path?: string; input?: unknown; tool: DiracSayTool } | null {
 	try {
 		const info = JSON.parse(text) as DiracSayTool
 		return {
@@ -1095,10 +1141,35 @@ function parseToolInfo(text: string): { title: string; kind: acp.ToolKind; path?
 			kind: TOOL_KIND_MAP[info.tool] || "other",
 			path: info.path,
 			input: info,
+			tool: info,
 		}
 	} catch {
 		return null
 	}
+}
+
+function toolAskRequiresPermission(toolInfo: DiracSayTool): boolean {
+	const requiresApproval = (toolInfo as { requiresApproval?: boolean }).requiresApproval
+	if (requiresApproval === true) {
+		return true
+	}
+	if (requiresApproval === false) {
+		return false
+	}
+
+	if (ALWAYS_REQUIRE_PERMISSION_TOOLS.has(toolInfo.tool)) {
+		return true
+	}
+
+	if (READ_ONLY_NO_PERMISSION_TOOLS.has(toolInfo.tool)) {
+		// Reads outside workspace can still surface as approval asks; keep those gated.
+		if (toolInfo.operationIsLocatedInWorkspace === false) {
+			return true
+		}
+		return false
+	}
+
+	return true
 }
 
 /**

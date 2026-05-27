@@ -1303,6 +1303,63 @@ describe("translateMessage - ask messages", () => {
 			expect(result.toolCallId).toBe(call.toolCallId)
 		})
 
+		it("should not request ACP permission for workspace read-only tool asks", () => {
+			const toolInfo = {
+				tool: "readFile",
+				path: "/src/file.ts",
+				operationIsLocatedInWorkspace: true,
+			}
+			const message = createDiracMessage({
+				type: "ask",
+				ask: "tool",
+				text: JSON.stringify(toolInfo),
+			})
+
+			const result = translateMessage(message, sessionState)
+
+			const toolCall = result.updates.find((u) => u.sessionUpdate === "tool_call")
+			expect(toolCall).toBeDefined()
+			expect(result.requiresPermission).toBe(false)
+			expect(result.permissionRequest).toBeUndefined()
+		})
+
+		it("should still request ACP permission when read-only ask is outside workspace", () => {
+			const toolInfo = {
+				tool: "readFile",
+				path: "/etc/hosts",
+				operationIsLocatedInWorkspace: false,
+			}
+			const message = createDiracMessage({
+				type: "ask",
+				ask: "tool",
+				text: JSON.stringify(toolInfo),
+			})
+
+			const result = translateMessage(message, sessionState)
+
+			expect(result.requiresPermission).toBe(true)
+			expect(result.permissionRequest).toBeDefined()
+		})
+
+		it("should honor explicit requiresApproval=true on tool payload", () => {
+			const toolInfo = {
+				tool: "readFile",
+				path: "/src/file.ts",
+				operationIsLocatedInWorkspace: true,
+				requiresApproval: true,
+			}
+			const message = createDiracMessage({
+				type: "ask",
+				ask: "tool",
+				text: JSON.stringify(toolInfo),
+			})
+
+			const result = translateMessage(message, sessionState)
+
+			expect(result.requiresPermission).toBe(true)
+			expect(result.permissionRequest).toBeDefined()
+		})
+
 		it("should not require permission for partial tool messages", () => {
 			const toolInfo = {
 				tool: "readFile",
