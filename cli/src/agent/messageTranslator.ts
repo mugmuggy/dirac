@@ -47,7 +47,6 @@ function generateToolCallId(): string {
 	return crypto.randomUUID()
 }
 
-
 /**
 
 /**
@@ -57,10 +56,7 @@ function generateToolCallId(): string {
  * @param sessionState - The current session state for tracking tool calls
  * @returns The translated message with ACP updates and interaction requirements
  */
-export function translateMessage(
-	message: DiracMessage,
-	sessionState: AcpSessionState,
-): TranslatedMessage {
+export function translateMessage(message: DiracMessage, sessionState: AcpSessionState): TranslatedMessage {
 	const updates: acp.SessionUpdate[] = []
 	let requiresPermission = false
 	let permissionRequest: TranslatedMessage["permissionRequest"]
@@ -92,7 +88,7 @@ export function translateMessage(
 			const toolCall: acp.ToolCall = {
 				toolCallId,
 				title: card.header,
-				kind: "other", // Default to other, could be refined by icon mapping
+				kind: TOOL_KIND_MAP[card.header] || "other",
 				status,
 				rawInput: { header: card.header },
 				content: card.body ? [{ type: "content", content: { type: "text", text: card.body } }] : undefined,
@@ -118,14 +114,7 @@ export function translateMessage(
 				requiresPermission = true
 				permissionRequest = {
 					toolCall,
-					options: card.requireApproval
-						? [
-								{ kind: "allow_once", optionId: DiracAskResponse.APPROVE, name: "Approve" },
-								{ kind: "reject_once", optionId: DiracAskResponse.REJECT, name: "Reject" },
-						  ]
-						: [
-								{ kind: "allow_once", optionId: "message", name: "Submit" },
-						  ],
+					options: buildPermissionOptions(card),
 				}
 			}
 
@@ -148,6 +137,28 @@ export function translateMessage(
 		permissionRequest,
 		toolCallId,
 	}
+}
+
+function buildPermissionOptions(card: {
+	requireApproval?: boolean
+	actions?: Array<{ label: string; value: string }>
+}): acp.PermissionOption[] {
+	if (card.actions?.length) {
+		return card.actions.map((action) => ({
+			kind: action.value === DiracAskResponse.REJECT ? "reject_once" : "allow_once",
+			optionId: action.value,
+			name: action.label,
+		}))
+	}
+
+	if (card.requireApproval) {
+		return [
+			{ kind: "allow_once", optionId: DiracAskResponse.APPROVE, name: "Approve" },
+			{ kind: "reject_once", optionId: DiracAskResponse.REJECT, name: "Reject" },
+		]
+	}
+
+	return [{ kind: "allow_once", optionId: DiracAskResponse.MESSAGE, name: "Submit" }]
 }
 
 function mapCardStatusToAcp(status: CardStatus): acp.ToolCallStatus {
@@ -175,10 +186,7 @@ function mapCardStatusToAcp(status: CardStatus): acp.ToolCallStatus {
 /**
  * Translate multiple Dirac messages to ACP session updates.
  */
-export function translateMessages(
-	messages: DiracMessage[],
-	sessionState: AcpSessionState,
-): acp.SessionUpdate[] {
+export function translateMessages(messages: DiracMessage[], sessionState: AcpSessionState): acp.SessionUpdate[] {
 	const allUpdates: acp.SessionUpdate[] = []
 	for (const message of messages) {
 		const result = translateMessage(message, sessionState)

@@ -9,14 +9,13 @@
 
 import type * as acp from "@agentclientprotocol/sdk"
 import { DiracAskResponse } from "@shared/WebviewMessage"
-import { Logger } from "@/shared/services/Logger.js"
 
 /**
  * Result of handling an interaction response.
  */
 export interface InteractionHandlerResult {
 	/** Dirac's internal response type */
-	response: DiracAskResponse
+	response: DiracAskResponse | string
 	/** Optional text to pass with the response */
 	text?: string
 	/** Whether "always allow" was selected (for auto-approval tracking) */
@@ -34,7 +33,7 @@ export interface InteractionHandlerResult {
  */
 export function handlePermissionResponse(
 	response: acp.RequestPermissionResponse,
-	interactionType: "tool" | "followup"
+	interactionType: "tool" | "followup",
 ): InteractionHandlerResult {
 	// Check if cancelled
 	if (response.outcome.outcome === "cancelled") {
@@ -77,10 +76,9 @@ export function handlePermissionResponse(
 			}
 
 		default:
-			// Unknown option ID - treat as rejection for safety
-			Logger.error(`[interactionHandler] Unknown interaction option: ${optionId}`)
 			return {
-				response: DiracAskResponse.REJECT,
+				response: optionId,
+				text: (response.outcome as any).data?.text as string | undefined,
 			}
 	}
 }

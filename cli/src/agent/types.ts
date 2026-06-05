@@ -17,6 +17,8 @@ export type {
 	ImageContent,
 	InitializeRequest,
 	InitializeResponse,
+	ListSessionsRequest,
+	ListSessionsResponse,
 	LoadSessionRequest,
 	LoadSessionResponse,
 	ModelInfo,

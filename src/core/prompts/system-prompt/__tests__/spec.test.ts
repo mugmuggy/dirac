@@ -140,6 +140,7 @@ describe("tools without parameters", () => {
             type: "object",
             properties: {},
             required: [],
+            additionalProperties: false,
         })
     })
 

@@ -139,6 +139,7 @@ type TaskParams = {
     files?: string[]
     historyItem?: HistoryItem
     taskId: string
+    conversationUlid?: string
     taskLockAcquired: boolean
 }
 
@@ -258,6 +259,7 @@ export class Task {
             files,
             historyItem,
             taskId,
+            conversationUlid,
             taskLockAcquired,
         } = params
 
@@ -288,7 +290,7 @@ export class Task {
                 this.taskState.checkpointManagerErrorMessage = historyItem.checkpointManagerErrorMessage
             }
         } else if (task || images || files) {
-            this.ulid = ulid()
+            this.ulid = conversationUlid ?? ulid()
         } else {
             throw new Error("Either historyItem or task/images must be provided")
         }

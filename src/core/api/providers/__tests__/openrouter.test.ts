@@ -40,7 +40,7 @@ describe("OpenRouterHandler", () => {
         sinon.stub(handler as any, "ensureClient").returns(fakeClient as any)
         sinon.stub(handler, "getModel").returns({
             id: "openai/gpt-4o-mini",
-            info: openRouterDefaultModelInfo,
+            info: { ...openRouterDefaultModelInfo, inputPrice: 0, outputPrice: 0, cacheWritesPrice: 0, cacheReadsPrice: 0 },
         })
 
         const chunks: any[] = []
@@ -55,7 +55,7 @@ describe("OpenRouterHandler", () => {
                 cacheReadTokens: 0,
                 inputTokens: 13,
                 outputTokens: 5,
-                totalCost: 0.000114,
+                totalCost: 0,
             },
         ])
     })

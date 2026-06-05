@@ -107,6 +107,8 @@ export interface DiracAcpSession {
 	sessionId: SessionID
 	/** Working directory for the session */
 	cwd: string
+	/** Concrete backing task ID used for persisted task files. ACP sessionId remains the stable conversation ID. */
+	taskId?: string
 	/** Current mode (plan/act) */
 	mode: "plan" | "act"
 	/** Timestamp when session was created */
@@ -181,8 +183,6 @@ export interface DiracAgentInfo {
 	version: string
 }
 
-
-
 // ============================================================
 // Message Translation
 // ============================================================
@@ -217,6 +217,8 @@ export type {
 	InitializeRequest,
 	InitializeResponse,
 	LoadSessionRequest,
+	ListSessionsRequest,
+	ListSessionsResponse,
 	LoadSessionResponse,
 	ModelInfo,
 	NewSessionRequest,
