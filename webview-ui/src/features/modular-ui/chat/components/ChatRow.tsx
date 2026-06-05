@@ -5,7 +5,7 @@ import { ChatRowProps } from "../types/chatRowTypes"
 const ChatRow = memo(
     (props: ChatRowProps) => {
         return (
-            <div className="relative pt-1.5 px-3 group transition-colors duration-300 hover:bg-white/5">
+            <div className="relative pt-1 px-3 group transition-colors duration-300 hover:bg-white/5">
                 <MessageRenderer {...props} />
             </div>
         )

@@ -50,7 +50,7 @@ export const useSlashCommandTrait = (): InputTrait & {
                 context.textAreaRef.current?.setSelectionRange(newCursorPosition, newCursorPosition)
             }, 0)
         },
-        []
+        [slashCommandsQuery]
     )
 
     const onInputChange = (value: string, cursorPosition: number, context: ModularInputContext) => {

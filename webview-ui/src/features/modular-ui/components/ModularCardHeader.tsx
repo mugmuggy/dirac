@@ -1,4 +1,4 @@
-import { Card, CardStatus } from "@shared/ExtensionMessage"
+import { Card, CardStatus, isFinalStatus } from "@shared/ExtensionMessage"
 import { StringRequest } from "@shared/proto/dirac/common"
 import { extractFirstPath } from "@shared/string"
 import { cn } from "@/lib/utils"
@@ -20,6 +20,7 @@ interface ModularCardHeaderProps {
 
 export const ModularCardHeader: React.FC<ModularCardHeaderProps> = ({ card, isCollapsed, onToggleCollapse, onAction }) => {
     const { header, icon, status } = card
+    const isTerminal = isFinalStatus(status)
     const filePath = extractFirstPath(header)
     const decorators = useMemo(
         () => CARD_DECORATORS.filter((d) => d.shouldApply(card)),
@@ -32,6 +33,7 @@ export const ModularCardHeader: React.FC<ModularCardHeaderProps> = ({ card, isCo
             className={cn(
                 "flex items-center transition-colors cursor-pointer gap-1.5 text-[10px] leading-4",
                 isCollapsed ? "px-2 py-0.5" : "px-3 py-1",
+                isTerminal && "opacity-60",
             )}
             onClick={onToggleCollapse}>
             <div className="flex-shrink-0 leading-none">
