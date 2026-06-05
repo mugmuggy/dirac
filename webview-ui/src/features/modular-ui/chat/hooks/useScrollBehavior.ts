@@ -1,12 +1,12 @@
 import { DiracMessage, CardStatus } from "@shared/ExtensionMessage"
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react"
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react"
 import { ListRange, VirtuosoHandle } from "react-virtuoso"
 import { ScrollBehavior } from "../types/chatTypes"
 
 export function useScrollBehavior(
     messages: DiracMessage[],
     visibleMessages: DiracMessage[],
-    groupedMessages: (DiracMessage | DiracMessage[])[],
+    renderedMessages: DiracMessage[],
     expandedRows: Record<number, boolean>,
     setExpandedRows: React.Dispatch<React.SetStateAction<Record<number, boolean>>>,
 ): ScrollBehavior & {
@@ -30,8 +30,8 @@ export function useScrollBehavior(
     messagesRef.current = messages
     const visibleMessagesRef = useRef(visibleMessages)
     visibleMessagesRef.current = visibleMessages
-    const groupedMessagesRef = useRef(groupedMessages)
-    groupedMessagesRef.current = groupedMessages
+    const renderedMessagesRef = useRef(renderedMessages)
+    renderedMessagesRef.current = renderedMessages
 
     // State
     const [showScrollToBottom, setShowScrollToBottom] = useState(false)
@@ -42,12 +42,6 @@ export function useScrollBehavior(
         setIsAtBottom(resolved)
     }, [])
     const [pendingScrollToMessage, setPendingScrollToMessage] = useState<number | null>(null)
-    // Find all user feedback messages
-    const userFeedbackMessages = useMemo(() => {
-        // In the new protocol, we don't distinguish user feedback messages yet
-        // This can be refactored once we add 'role' to DiracMessage if needed
-        return []
-    }, [])
     // Handler for when visible range changes in Virtuoso (kept for compatibility but not used for sticky)
     const handleRangeChanged = useCallback((_range: ListRange) => {
         // Range changed callback - we now use scroll position instead
@@ -82,7 +76,7 @@ export function useScrollBehavior(
             setPendingScrollToMessage(messageIndex)
 
             const msgs = messagesRef.current
-            const grouped = groupedMessagesRef.current
+            const rendered = renderedMessagesRef.current
             const targetMessage = msgs[messageIndex]
             if (!targetMessage) {
                 setPendingScrollToMessage(null)
@@ -96,41 +90,23 @@ export function useScrollBehavior(
                 return
             }
 
-            let groupIndex = -1
-
-            for (let i = 0; i < grouped.length; i++) {
-                const group = grouped[i]
-                if (Array.isArray(group)) {
-                    const messageInGroup = group.some((msg) => msg.ts === targetMessage.ts)
-                    if (messageInGroup) {
-                        groupIndex = i
-                        break
-                    }
-                } else {
-                    if (group.ts === targetMessage.ts) {
-                        groupIndex = i
-                        break
-                    }
-                }
-            }
-
-            if (groupIndex !== -1) {
+            const renderedIndex = rendered.findIndex((msg) => msg.ts === targetMessage.ts)
+            if (renderedIndex === -1) {
                 setPendingScrollToMessage(null)
-                disableAutoScrollRef.current = true
-
-                // Check if this is the first user feedback message (no sticky header would show when scrolling to it)
-                const isFirstUserMessage =
-                    groupIndex === 0
-
-                // Use scrollToIndex - Virtuoso handles this more reliably than manual scrollTo
-                requestAnimationFrame(() => {
-                    virtuosoRef.current?.scrollToIndex({
-                        index: groupIndex,
-                        align: "start",
-                        behavior: "smooth",
-                    })
-                })
+                return
             }
+
+            setPendingScrollToMessage(null)
+            disableAutoScrollRef.current = true
+
+            // Use scrollToIndex - Virtuoso handles this more reliably than manual scrollTo
+            requestAnimationFrame(() => {
+                virtuosoRef.current?.scrollToIndex({
+                    index: renderedIndex,
+                    align: "start",
+                    behavior: "smooth",
+                })
+            })
         },
         [], // No deps — reads from refs
     )
@@ -139,18 +115,15 @@ export function useScrollBehavior(
     const toggleRowExpansion = useCallback(
         (ts: number) => {
             const isCollapsing = expandedRows[ts] ?? false
-            const lastGroup = groupedMessages.at(-1)
-            const isLast = Array.isArray(lastGroup) ? lastGroup[0].ts === ts : lastGroup?.ts === ts
-            const secondToLastGroup = groupedMessages.at(-2)
-            const isSecondToLast = Array.isArray(secondToLastGroup)
-                ? secondToLastGroup[0].ts === ts
-                : secondToLastGroup?.ts === ts
+            const lastMessage = renderedMessages.at(-1)
+            const isLast = lastMessage?.ts === ts
+            const secondToLastMessage = renderedMessages.at(-2)
+            const isSecondToLast = secondToLastMessage?.ts === ts
 
             const isLastCollapsedApiReq =
                 isLast &&
-                !Array.isArray(lastGroup) && // Make sure it's not a browser session group
-                lastGroup?.content.type === "api_status" &&
-                !expandedRows[lastGroup.ts]
+                lastMessage?.content.type === "api_status" &&
+                !expandedRows[lastMessage.ts]
 
             setExpandedRows((prev) => ({
                 ...prev,
@@ -179,7 +152,7 @@ export function useScrollBehavior(
             }
             // When expanding, don't scroll - let the element expand in place
         },
-        [groupedMessages, expandedRows, scrollToBottomAuto],
+        [renderedMessages, expandedRows, scrollToBottomAuto],
     )
 
 
@@ -187,7 +160,7 @@ export function useScrollBehavior(
         if (pendingScrollToMessage !== null) {
             scrollToMessage(pendingScrollToMessage)
         }
-    }, [pendingScrollToMessage, groupedMessages, scrollToMessage])
+    }, [pendingScrollToMessage, renderedMessages, scrollToMessage])
 
     useEffect(() => {
         if (!messages?.length) {
@@ -198,16 +171,15 @@ export function useScrollBehavior(
     // Scroll to bottom when a card requires user input (approval buttons appear)
     const lastCardStatusRef = useRef<string | undefined>()
     useEffect(() => {
-        const lastGroup = groupedMessages.at(-1)
-        if (!lastGroup) return
-        const lastMsg = Array.isArray(lastGroup) ? lastGroup.at(-1) : lastGroup
-        const currentStatus = lastMsg?.content.type === "card" ? lastMsg.content.card.status : undefined
+        const lastMessage = renderedMessages.at(-1)
+        if (!lastMessage) return
+        const currentStatus = lastMessage.content.type === "card" ? lastMessage.content.card.status : undefined
         if (currentStatus === CardStatus.WAITING_FOR_INPUT && lastCardStatusRef.current !== CardStatus.WAITING_FOR_INPUT) {
             disableAutoScrollRef.current = false
             scrollToBottomAuto()
         }
         lastCardStatusRef.current = currentStatus
-    }, [groupedMessages, scrollToBottomAuto])
+    }, [renderedMessages, scrollToBottomAuto])
 
     return {
         virtuosoRef,

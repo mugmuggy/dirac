@@ -47,7 +47,7 @@ export interface ChatViewContext {
 	task?: DiracMessage
 	messages: DiracMessage[]
 	modifiedMessages: DiracMessage[]
-	groupedMessages: (DiracMessage | DiracMessage[])[]
+	renderedMessages: DiracMessage[]
 	apiMetrics: any
 	lastApiReqInfo: any
 	chatState: ChatState

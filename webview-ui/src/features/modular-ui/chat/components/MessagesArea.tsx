@@ -7,7 +7,7 @@ import { MessageRenderer } from "./VirtuosoItemRenderer"
 
 interface MessagesAreaProps {
     task: DiracMessage
-    groupedMessages: (DiracMessage | DiracMessage[])[]
+    renderedMessages: DiracMessage[]
     modifiedMessages: DiracMessage[]
     scrollBehavior: ScrollBehavior
     chatState: ChatState
@@ -16,11 +16,11 @@ interface MessagesAreaProps {
 
 /**
  * The scrollable messages area with virtualized list
- * Handles rendering of chat rows and browser sessions
+ * Handles rendering of chat rows
  */
 export const MessagesArea: React.FC<MessagesAreaProps> = ({
     task,
-    groupedMessages,
+    renderedMessages,
     modifiedMessages,
     scrollBehavior,
     chatState,
@@ -44,7 +44,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 
     // Use refs for renderer deps to keep itemContent callback stable
     const rendererStateRef = useRef({
-        groupedMessages,
+        renderedMessages,
         modifiedMessages,
         expandedRows,
         toggleRowExpansion,
@@ -55,7 +55,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
         activeVoiceStreamId,
     })
     rendererStateRef.current = {
-        groupedMessages,
+        renderedMessages,
         modifiedMessages,
         expandedRows,
         toggleRowExpansion,
@@ -67,13 +67,13 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
     }
 
     const itemContent = useCallback(
-        (index: number, messageOrGroup: DiracMessage | DiracMessage[]) => {
+        (index: number, message: DiracMessage) => {
             const state = rendererStateRef.current
             return (
                 <MessageRenderer
                     index={index}
-                    messageOrGroup={messageOrGroup}
-                    groupedMessages={state.groupedMessages}
+                    message={message}
+                    renderedMessages={state.renderedMessages}
                     modifiedMessages={state.modifiedMessages}
                     expandedRows={state.expandedRows}
                     onToggleExpand={state.toggleRowExpansion}
@@ -120,7 +120,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
                         atBottomThreshold={80}
                         className="grow"
                         components={virtuosoComponents}
-                        data={groupedMessages}
+                        data={renderedMessages}
                         increaseViewportBy={{
                             top: 1_000,
                             bottom: 800,
@@ -129,7 +129,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
                             if (disableAutoScrollRef.current) return false
                             return "auto"
                         }}
-                        initialTopMostItemIndex={groupedMessages.length - 1}
+                        initialTopMostItemIndex={renderedMessages.length - 1}
                         itemContent={itemContent}
                         key={task.ts}
                         rangeChanged={handleRangeChanged}

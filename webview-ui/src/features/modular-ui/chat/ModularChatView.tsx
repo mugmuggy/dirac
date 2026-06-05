@@ -10,11 +10,10 @@ import { useShowNavbar } from "@/context/PlatformContext"
 import { normalizeApiConfiguration } from "@/features/settings/components/utils/providerUtils"
 import { Mode } from "@shared/ExtensionMessage"
 import { getApiMetrics, getLastApiReqInfo } from "@shared/getApiMetrics"
-import { combineCardSequences } from "@shared/combineCardSequences"
 import { useChatState } from "./hooks/useChatState"
 import { useMessageHandlers } from "./hooks/useMessageHandlers"
 import { useScrollBehavior } from "./hooks/useScrollBehavior"
-import { filterVisibleMessages, groupLowStakesTools, groupMessages } from "./utils/messageUtils"
+import { filterVisibleMessages } from "./utils/messageUtils"
 import { ChatLayout } from "./components/ChatLayout"
 import { CHAT_CONSTANTS } from "./constants"
 import { Navbar } from "@/shared/ui/Navbar"
@@ -59,8 +58,7 @@ export const ModularChatView: React.FC<ChatViewProps> = ({
     const debouncedMessages = useDebouncedValue(messages, streamingActive ? 150 : 0)
 
     const modifiedMessages = useMemo(() => {
-        const slicedMessages = debouncedMessages.slice(1)
-        return combineCardSequences(slicedMessages)
+        return debouncedMessages.slice(1)
     }, [debouncedMessages])
 
     const apiMetrics = useMemo(() => getApiMetrics(modifiedMessages), [modifiedMessages])
@@ -146,11 +144,9 @@ export const ModularChatView: React.FC<ChatViewProps> = ({
         return filterVisibleMessages(modifiedMessages)
     }, [modifiedMessages])
 
-    const groupedMessages = useMemo(() => {
-        return groupLowStakesTools(groupMessages(visibleMessages))
-    }, [visibleMessages])
+    const renderedMessages = visibleMessages
 
-    const scrollBehavior = useScrollBehavior(messages, visibleMessages, groupedMessages, expandedRows, setExpandedRows)
+    const scrollBehavior = useScrollBehavior(messages, visibleMessages, renderedMessages, expandedRows, setExpandedRows)
 
     const placeholderText = useMemo(() => {
         return task ? "Type a message..." : "Type your task here..."
@@ -161,7 +157,7 @@ export const ModularChatView: React.FC<ChatViewProps> = ({
             task,
             messages,
             modifiedMessages,
-            groupedMessages,
+            renderedMessages,
             apiMetrics,
             lastApiReqInfo,
             chatState,
@@ -189,7 +185,7 @@ export const ModularChatView: React.FC<ChatViewProps> = ({
             task,
             messages,
             modifiedMessages,
-            groupedMessages,
+            renderedMessages,
             apiMetrics,
             lastApiReqInfo,
             chatState,

@@ -8,8 +8,8 @@ import type { MessageHandlers } from "../types/chatTypes"
 
 interface MessageRendererProps {
     index: number
-    messageOrGroup: DiracMessage | DiracMessage[]
-    groupedMessages: (DiracMessage | DiracMessage[])[]
+    message: DiracMessage
+    renderedMessages: DiracMessage[]
     modifiedMessages: DiracMessage[]
     expandedRows: Record<number, boolean>
     onToggleExpand: (ts: number) => void
@@ -24,13 +24,13 @@ interface MessageRendererProps {
 
 /**
  * Specialized component for rendering different message types
- * Handles browser sessions, regular messages, and checkpoint logic
+ * Handles regular messages and checkpoint logic
  */
 export const MessageRenderer = memo(
     ({
         index,
-        messageOrGroup,
-        groupedMessages,
+        message,
+        renderedMessages,
         modifiedMessages,
         expandedRows,
         onToggleExpand,
@@ -44,39 +44,29 @@ export const MessageRenderer = memo(
     }: MessageRendererProps) => {
         const { mode } = useSettingsStore() as { mode: Mode }
 
-        const isLastMessage = useMemo(() => index === groupedMessages?.length - 1, [groupedMessages, index])
-
-        if (Array.isArray(messageOrGroup)) {
-            // In the new protocol, we don't group messages in the UI anymore.
-            // If we still have groups, it's from legacy code or unexpected state.
-            return (
-                <div className="p-2 border border-error bg-error/10 text-error rounded-md m-2">
-                    <strong>Protocol Error:</strong> Unexpected grouped messages.
-                </div>
-            )
-        }
+        const isLastMessage = useMemo(() => index === renderedMessages.length - 1, [renderedMessages, index])
 
         return (
             <div
                 className={cn({
                     "pb-1.5": isLastMessage && !footerActive,
                 })}
-                data-message-ts={messageOrGroup.ts}>
+                data-message-ts={message.ts}>
                 <ChatRow
                     inputValue={inputValue}
-                    isExpanded={expandedRows[messageOrGroup.ts] || false}
+                    isExpanded={expandedRows[message.ts] || false}
                     isLast={isLastMessage}
                     isRequestInProgress={false} // Handled by the new protocol partial flag
-                    key={messageOrGroup.id || messageOrGroup.ts}
+                    key={message.id || message.ts}
                     lastModifiedMessage={modifiedMessages.at(-1)}
-                    message={messageOrGroup}
+                    message={message}
                     mode={mode}
                     onCancelCommand={() => messageHandlers.executeButtonAction("cancel")}
                     onSetQuote={onSetQuote}
                     onToggleExpand={onToggleExpand}
                     sendMessageFromChatRow={messageHandlers.handleSendMessage}
-                    onApprove={() => messageHandlers.executeButtonAction(DiracAskResponse.APPROVE, undefined, undefined, undefined, undefined, messageOrGroup.id)}
-                    onReject={() => messageHandlers.executeButtonAction(DiracAskResponse.REJECT, undefined, undefined, undefined, undefined, messageOrGroup.id)}
+                    onApprove={() => messageHandlers.executeButtonAction(DiracAskResponse.APPROVE, undefined, undefined, undefined, undefined, message.id)}
+                    onReject={() => messageHandlers.executeButtonAction(DiracAskResponse.REJECT, undefined, undefined, undefined, undefined, message.id)}
                     onAction={(value, cardId) => messageHandlers.executeButtonAction("utility", value, undefined, undefined, undefined, cardId)}
                     activeCardId={activeCardId}
                     activeVoiceStreamId={activeVoiceStreamId}
@@ -92,7 +82,7 @@ export const MessageRenderer = memo(
  * This allows us to encapsulate the rendering logic while maintaining performance
  */
 export const createMessageRenderer = (
-    groupedMessages: (DiracMessage | DiracMessage[])[],
+    renderedMessages: DiracMessage[],
     modifiedMessages: DiracMessage[],
     expandedRows: Record<number, boolean>,
     onToggleExpand: (ts: number) => void,
@@ -104,15 +94,15 @@ export const createMessageRenderer = (
     activeVoiceStreamId?: string,
 
 ) => {
-    return (index: number, messageOrGroup: DiracMessage | DiracMessage[]) => (
+    return (index: number, message: DiracMessage) => (
         <MessageRenderer
             expandedRows={expandedRows}
             footerActive={footerActive}
-            groupedMessages={groupedMessages}
+            renderedMessages={renderedMessages}
             index={index}
             inputValue={inputValue}
             messageHandlers={messageHandlers}
-            messageOrGroup={messageOrGroup}
+            message={message}
             modifiedMessages={modifiedMessages}
             onSetQuote={onSetQuote}
             onToggleExpand={onToggleExpand}
