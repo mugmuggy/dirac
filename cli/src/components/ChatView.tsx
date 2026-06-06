@@ -63,6 +63,7 @@ import { useHomeEndKeys } from "../hooks/useHomeEndKeys"
 import { useRawBackspaceKeys } from "../hooks/useRawBackspaceKeys"
 import { useIsSpinnerActive, useLastCompletedAskMessage } from "../hooks/useStateSubscriber"
 import { useTextInput } from "../hooks/useTextInput"
+import { useTerminalSize } from "../hooks/useTerminalSize"
 import { setTerminalTitle } from "../utils/display"
 import {
     checkAndWarnRipgrepMissing,
@@ -140,6 +141,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 }) => {
     const quote = useMemo(() => getRandomQuote(), [])
     const { stdout } = useStdout()
+    const { columns: terminalColumns, rows: terminalRows } = useTerminalSize()
     const taskState = useTaskState()
     const { controller: taskController, clearState } = useTaskContext()
     const { isActive: isSpinnerActive, startTime: spinnerStartTime } = useIsSpinnerActive()
@@ -583,11 +585,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     handleButtonAction(DiracAskResponse.REJECT, false)
                     return true
                 }
-                if (input.toLowerCase() === "a" && !card.header.toLowerCase().includes("command")) {
-                    StateManager.get().setSessionOverride("yoloModeToggled", true)
-                    handleButtonAction(DiracAskResponse.APPROVE, true)
-                    return true
-                }
             }
 
             if (card.requireFeedback) {
@@ -873,6 +870,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         cursorPos={cursorPos}
                         inputPrompt={inputPrompt}
                         textInput={textInput}
+                        terminalColumns={terminalColumns}
+                        terminalRows={terminalRows}
                     />
                 )}
 

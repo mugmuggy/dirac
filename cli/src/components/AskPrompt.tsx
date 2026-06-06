@@ -79,19 +79,6 @@ export const AskPrompt: React.FC = () => {
 					<Text color={color}>{` ${label} `}</Text>
 					<Text color="gray">
 						[<Text bold color="white">y</Text>]es / [<Text bold color="white">n</Text>]o
-						{!isCommand && (
-							<React.Fragment>
-								{" / ["}
-								<Text bold color="white">
-									c
-								</Text>
-								{"]omment / ["}
-								<Text bold color="white">
-									a
-								</Text>
-								{"]pprove all from here on"}
-							</React.Fragment>
-						)}
 					</Text>
 				</Box>
 			</Box>

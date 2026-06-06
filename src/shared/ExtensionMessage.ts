@@ -130,11 +130,8 @@ export interface ExtensionState {
     githubCopilotIsAuthenticated?: boolean
     githubCopilotEmail?: string
     githubCopilotModels?: Record<string, any>
-
     taskStatus: TaskStatus;
-
     uiActionState: UIActionState
-
 }
 
 export enum TaskStatus {
