@@ -51,7 +51,7 @@ export interface ToolMetadata {
 export interface ExtensionState {
     isNewUser: boolean
     welcomeViewCompleted: boolean
-    onboardingModels: OnboardingModelGroup | undefined
+    onboardingModels?: OnboardingModelGroup | undefined
     apiConfiguration?: ApiConfiguration
     autoApprovalSettings: AutoApprovalSettings
     browserSettings: BrowserSettings

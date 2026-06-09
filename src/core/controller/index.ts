@@ -43,7 +43,6 @@ import { ToolRegistry } from "../task/tools/registry/ToolRegistry"
 import { refreshToolRegistryForWorkspace } from "../task/tools/registry/refreshToolRegistry"
 
 import { getOrDiscoverSkills } from "../context/instructions/user-instructions/skills"
-import { getDiracOnboardingModels } from "./models/getDiracOnboardingModels"
 import { appendDiracStealthModels } from "./models/refreshOpenRouterModels"
 import { checkCliInstallation } from "./state/checkCliInstallation"
 import { sendStateUpdate } from "./state/subscribeToState"
@@ -622,7 +621,6 @@ export class Controller {
 
 	async getStateToPostToWebview(): Promise<ExtensionState> {
 		// Get API configuration from cache for immediate access
-		const onboardingModels = getDiracOnboardingModels()
 		const apiConfiguration = this.stateManager.getApiConfiguration()
 		const lastShownAnnouncementId = this.stateManager.getGlobalStateKey("lastShownAnnouncementId")
 		const taskHistory = this.stateManager.getGlobalStateKey("taskHistory")
@@ -771,7 +769,6 @@ export class Controller {
 			defaultTerminalProfile,
 			isNewUser,
 			welcomeViewCompleted,
-			onboardingModels,
 			terminalOutputLineLimit,
 			maxConsecutiveMistakes,
 			customPrompt,
