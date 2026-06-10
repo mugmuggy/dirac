@@ -13,6 +13,7 @@ export interface SearchFilesArgs {
     regex: string
     file_pattern?: string
     context_lines?: string | number
+    include_anchors?: boolean
 }
 
 interface SearchPathInfo {
@@ -62,6 +63,13 @@ export const search_files_spec: DiracToolSpec = {
             instruction: "Optional number of context lines to show before and after each match (0-10, default 0).",
             usage: "2",
         },
+        {
+            name: "include_anchors",
+            required: false,
+            type: "boolean",
+            instruction: "Optional. When true, returns source lines prefixed with stable hash anchors usable by edit_file. Default false.",
+            usage: "true",
+        },
     ],
 }
 
@@ -76,6 +84,7 @@ export class SearchFilesTool implements IDiracTool<SearchFilesArgs, string> {
 
     async processCall(args: SearchFilesArgs, env: IToolEnvironment): Promise<string> {
         const { paths, regex, file_pattern, context_lines } = args
+        const includeAnchors = args.include_anchors === true
         if (!paths || paths.length === 0) {
             env.orchestration.setTaskState(
                 "consecutiveMistakeCount",
@@ -113,6 +122,7 @@ export class SearchFilesTool implements IDiracTool<SearchFilesArgs, string> {
                 contextLines,
                 env,
                 card,
+                includeAnchors,
             )
 
             // 3. Surface total failures before formatting. Empty successful searches are
@@ -229,6 +239,7 @@ export class SearchFilesTool implements IDiracTool<SearchFilesArgs, string> {
         contextLines: number | undefined,
         env: IToolEnvironment,
         card: any,
+        includeAnchors: boolean,
     ): Promise<{ searchResults: SearchExecutionResult[]; searchDurationMs: number }> {
         const searchStartTime = Date.now()
         const searchPromises = allSearchPaths.map(async ({ absolutePath, workspaceName }) => {
@@ -253,6 +264,7 @@ export class SearchFilesTool implements IDiracTool<SearchFilesArgs, string> {
                     filePattern: filePattern,
                     contextLines,
                     excludeFilePatterns: ["!.*", "!**/.*"],
+                    includeAnchors,
                 })
 
                 const firstLine = results.split("\n")[0]

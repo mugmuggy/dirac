@@ -1,6 +1,5 @@
 sample.cs::SampleNamespace.Program.TopLevelFunc
 [Function Hash: d680c0fc]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 public static int TopLevelFunc(int x)
         {
             var obj = new CSharpClass("top-level");

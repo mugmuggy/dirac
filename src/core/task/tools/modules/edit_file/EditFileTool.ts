@@ -13,7 +13,7 @@ import { ToolResponse } from "../../../index"
 import { ToolResponseCombiner } from "../../utils/ToolResponseCombiner"
 import { AnchorStateManager } from "@utils/AnchorStateManager"
 import * as diff from "diff"
-import { getDelimiter, stripHashes } from "@utils/line-hashing"
+import { getDelimiter, stripHashesFromDiff } from "@utils/line-hashing"
 
 export interface EditFileArgs {
     files: FileEdit[]
@@ -219,7 +219,7 @@ export class EditFileTool implements IDiracTool<EditFileArgs> {
             prepared.diff = this.generateDiff(displayPath, prepared.lines, finalLines)
 
             if (cards[absolutePath]) {
-                await cards[absolutePath].update({ body: stripHashes(prepared.diff) })
+                await cards[absolutePath].update({ body: stripHashesFromDiff(prepared.diff) })
             }
 
             preparedBatches.push({ absolutePath, displayPath, blocks: [], prepared })
@@ -286,7 +286,7 @@ export class EditFileTool implements IDiracTool<EditFileArgs> {
         return true
     }
 
-        private async handleApprovalFlow(
+    private async handleApprovalFlow(
         env: IToolEnvironment,
         preparedBatches: PreparedFileBatch[],
         cards: Record<string, any>
@@ -316,7 +316,7 @@ export class EditFileTool implements IDiracTool<EditFileArgs> {
                     : `${preparedBatches.length} files`
 
             const aggregatedDiffs = preparedBatches
-                .map((b) => stripHashes(b.prepared!.diff))
+                .map((b) => stripHashesFromDiff(b.prepared!.diff))
                 .filter((d) => d.trim().length > 0)
                 .join("\n\n")
 

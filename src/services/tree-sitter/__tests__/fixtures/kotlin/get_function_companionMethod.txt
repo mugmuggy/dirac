@@ -1,6 +1,5 @@
 sample.kt::KotlinClass.companionMethod
 [Function Hash: f4959c9b]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 fun companionMethod(): String {
             return "companion"
         }

@@ -202,3 +202,44 @@ describe("ReadFileToolHandler.execute – file not found", () => {
 		assert.equal(taskState.consecutiveMistakeCount, 1)
 	})
 })
+
+describe("ReadFileToolHandler.execute – include_anchors visibility and cache", () => {
+	let sandbox: sinon.SinonSandbox
+
+	beforeEach(async () => {
+		sandbox = sinon.createSandbox()
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "dirac-read-cache-test-"))
+		sandbox.stub(pathUtils, "isLocatedInWorkspace").resolves(true)
+	})
+
+	afterEach(async () => {
+		sandbox.restore()
+		await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+	})
+
+	function makeReadBlock(relPath: string, includeAnchors?: boolean) {
+		return {
+			type: "tool_use" as const,
+			name: DiracDefaultTool.FILE_READ,
+			params: includeAnchors === undefined ? { paths: [relPath] } : { paths: [relPath], include_anchors: includeAnchors },
+		}
+	}
+
+	it("defaults to plain output while allowing a later anchored read of unchanged content", async () => {
+		const { config, validator } = createConfig()
+		const handler = new ReadFileToolHandler(validator)
+		const realFile = "cache-mode.txt"
+		await fs.writeFile(path.join(tmpDir, realFile), "first line\nsecond line")
+
+		const plainResult = (await handler.execute(config, makeReadBlock(realFile))) as string
+		assert.ok(plainResult.includes("first line\nsecond line"))
+		assert.ok(!/^[A-Z][a-zA-Z]*§first line/m.test(plainResult))
+
+		const anchoredResult = (await handler.execute(config, makeReadBlock(realFile, true))) as string
+		assert.ok(/^[A-Z][a-zA-Z]*§first line/m.test(anchoredResult))
+		assert.ok(/^[A-Z][a-zA-Z]*§second line/m.test(anchoredResult))
+
+		const repeatedAnchoredResult = (await handler.execute(config, makeReadBlock(realFile, true))) as string
+		assert.ok(repeatedAnchoredResult.includes("no changes have been made to the file since your last read"))
+	})
+})

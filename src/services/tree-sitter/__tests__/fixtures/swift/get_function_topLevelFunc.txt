@@ -1,6 +1,5 @@
 sample.swift::topLevelFunc
 [Function Hash: 31aba4b0]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /// topLevelFunc is a top-level function.
 func topLevelFunc(x: Int) -> Int {
     let obj = SwiftClass(name: "example")

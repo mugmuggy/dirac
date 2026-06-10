@@ -167,6 +167,7 @@ export class SurfaceAdapter implements IToolEnvironment {
                     contextLines?: number
                     excludeFilePatterns?: string[]
                     debugLog?: (info: Record<string, any>) => Promise<void>
+                    includeAnchors?: boolean
                 },
             ) => {
                 await options?.debugLog?.({
@@ -175,7 +176,7 @@ export class SurfaceAdapter implements IToolEnvironment {
                     directoryPath,
                     regex,
                     filePattern: options?.filePattern,
-                    taskId: this.config.taskId,
+                    taskId: this.config.ulid,
                     contextLines: options?.contextLines,
                     excludeFilePatterns: options?.excludeFilePatterns,
                 })
@@ -185,10 +186,11 @@ export class SurfaceAdapter implements IToolEnvironment {
                     regex,
                     options?.filePattern,
                     this.config.services.diracIgnoreController,
-                    this.config.taskId,
+                    this.config.ulid,
                     options?.contextLines,
                     options?.excludeFilePatterns,
                     options?.debugLog,
+                    options?.includeAnchors,
                 )
             },
             getSystemInfo: async () => {
@@ -251,7 +253,7 @@ export class SurfaceAdapter implements IToolEnvironment {
 
         }
         this.ast = {
-            getSkeleton: async (path: string, options?: { showCallGraph?: boolean }) => {
+            getSkeleton: async (path: string, options?: { showCallGraph?: boolean; includeAnchors?: boolean }) => {
                 const skeleton = await ASTAnchorBridge.getFileSkeleton(
                     path,
                     this.config.services.diracIgnoreController,
@@ -261,13 +263,14 @@ export class SurfaceAdapter implements IToolEnvironment {
                 return skeleton || ""
             },
 
-            getFunctions: async (absolutePath: string, relPath: string, functionNames: string[]) => {
+            getFunctions: async (absolutePath: string, relPath: string, functionNames: string[], includeAnchors?: boolean) => {
                 return await ASTAnchorBridge.getFunctions(
                     absolutePath,
                     relPath,
                     functionNames,
                     this.config.services.diracIgnoreController,
                     this.config.ulid,
+                    includeAnchors,
                 )
             },
         }

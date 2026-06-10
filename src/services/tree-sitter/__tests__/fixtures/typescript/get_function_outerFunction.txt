@@ -1,6 +1,5 @@
 sample.ts::outerFunction
 [Function Hash: 107feba5]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /**
  * A nested scenario.
  */

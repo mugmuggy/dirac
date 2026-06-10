@@ -127,10 +127,11 @@ export async function regexSearchFiles(
 	regex: string,
 	filePattern?: string,
 	diracIgnoreController?: DiracIgnoreController,
-	taskId?: string,
+	anchorTaskId?: string,
 	contextLines?: number,
 	excludeFilePatterns?: string[],
 	debugLog?: RipgrepDebugLog,
+	includeAnchors?: boolean,
 ): Promise<string> {
 	// Limit context lines to 10
 	const cappedContextLines = Math.max(0, Math.min(10, contextLines || 0))
@@ -239,14 +240,14 @@ export async function regexSearchFiles(
 	}
 	await debugLog?.(finalDetails)
 
-	return await formatResults(fileResults, finalMatchCount, cwd, taskId)
+	return await formatResults(fileResults, finalMatchCount, cwd, anchorTaskId, includeAnchors)
 }
 
 const MAX_RIPGREP_MB = 0.1
 const MAX_BYTE_SIZE = MAX_RIPGREP_MB * 1024 * 1024 // 0.25MB in bytes
 const MAX_LINE_LENGTH = 300
 
-async function formatResults(results: FileSearchResult[], matchCount: number, cwd: string, taskId?: string): Promise<string> {
+async function formatResults(results: FileSearchResult[], matchCount: number, cwd: string, anchorTaskId?: string, includeAnchors?: boolean): Promise<string> {
 	let output = ""
 	if (matchCount >= MAX_RESULTS) {
 		output += `Showing first ${MAX_RESULTS} of ${matchCount.toLocaleString()}+ results. Use a more specific search if necessary.\n\n`
@@ -264,12 +265,12 @@ async function formatResults(results: FileSearchResult[], matchCount: number, cw
 		let anchors: string[] = []
 
 		try {
-			if (AnchorStateManager.isTracking(absoluteFilePath, taskId)) {
-				anchors = AnchorStateManager.getAnchors(absoluteFilePath, taskId)!
+			if (AnchorStateManager.isTracking(absoluteFilePath, anchorTaskId)) {
+				anchors = AnchorStateManager.getAnchors(absoluteFilePath, anchorTaskId)!
 			} else {
 				const content = await fs.readFile(absoluteFilePath, "utf8")
 				const lines = content.split(/\r?\n/)
-				anchors = AnchorStateManager.reconcile(absoluteFilePath, lines, taskId)
+				anchors = AnchorStateManager.reconcile(absoluteFilePath, lines, anchorTaskId)
 			}
 		} catch (error) {
 			Logger.error(`Error reading file for search anchors: ${absoluteFilePath}`, error)
@@ -310,9 +311,9 @@ async function formatResults(results: FileSearchResult[], matchCount: number, cw
 			}
 
 			const anchor = anchors[line.lineNum - 1] || `L${line.lineNum}`
-			const trimmedLine = line.content.trimEnd()
-			const hashedLine = formatLineWithHash(trimmedLine, anchor)
-			const lineString = `│${hashedLine}\n`
+			const strippedLine = line.content.replace(/\r?\n$/, "")
+			const displayLine = includeAnchors ? formatLineWithHash(strippedLine, anchor) : strippedLine
+			const lineString = `│${displayLine}\n`
 			const lineBytes = Buffer.byteLength(lineString, "utf8")
 
 			if (byteSize + lineBytes >= MAX_BYTE_SIZE) {

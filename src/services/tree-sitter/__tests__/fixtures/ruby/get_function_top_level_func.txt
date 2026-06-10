@@ -1,6 +1,5 @@
 sample.rb::top_level_func
 [Function Hash: cced7f27]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 # top_level_func is a top-level function.
 def top_level_func(x)
   obj = RubyClass.new("example")

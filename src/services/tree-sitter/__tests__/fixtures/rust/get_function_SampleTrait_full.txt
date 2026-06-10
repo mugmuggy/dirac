@@ -1,6 +1,5 @@
 sample.rs::SampleTrait
 [Function Hash: 52a1b2ec]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 pub trait SampleTrait {
     fn trait_method(&self);
 }

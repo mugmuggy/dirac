@@ -1,6 +1,5 @@
 sample.py::PythonClass.calculate
 [Function Hash: 2c33192c]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 class PythonClass:
 ...
 def calculate(self, a: int, b: int) -> int:

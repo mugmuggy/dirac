@@ -1,6 +1,5 @@
 --- sample.rs ---
-Stable Anchors are provided with each line.
- |----
+|----
 │pub struct RustStruct {
 │    # Lines: 3
 |----

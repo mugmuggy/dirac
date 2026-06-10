@@ -1,6 +1,5 @@
 sample.rb::RubyClass.get_name
 [Function Hash: ff4b7936]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 # get_name returns the name.
   def get_name
     @name

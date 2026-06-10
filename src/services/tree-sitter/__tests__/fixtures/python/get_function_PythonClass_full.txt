@@ -1,6 +1,5 @@
 sample.py::PythonClass
 [Function Hash: 054d4bc4]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 class PythonClass:
     """
     A sample class in Python.

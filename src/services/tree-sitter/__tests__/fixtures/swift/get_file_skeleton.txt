@@ -1,6 +1,5 @@
 --- sample.swift ---
-Stable Anchors are provided with each line.
- |----
+|----
 │class SwiftClass {
 │    # Lines: 16
 │    var name: String

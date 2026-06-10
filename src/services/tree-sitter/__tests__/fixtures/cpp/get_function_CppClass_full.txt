@@ -1,6 +1,5 @@
 sample.cpp::CppClass
 [Function Hash: 5e68a09d]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /**
  * A sample class in C++.
  */
@@ -31,7 +30,6 @@ private:
 
 sample.cpp::CppClass.CppClass
 [Function Hash: bc160706]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /**
      * Constructor.
      */

@@ -1,6 +1,5 @@
 sample.ts::DecoratedClass.methodWithDecorators
 [Function Hash: 7fc676bf]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 @decorator
 	@decorator
 	methodWithDecorators() {

@@ -4,7 +4,7 @@ import { DiracIcon } from "@/shared/icons"
 import { DiracToolSpec, DiracDefaultTool } from "@/shared/tools"
 import { SurfaceType } from "../../interfaces/SurfaceType"
 import { AnchorStateManager } from "@utils/AnchorStateManager"
-import { formatLineWithHash } from "@utils/line-hashing"
+import { formatLineForModel } from "@utils/line-hashing"
 import { CardStatus } from "@/shared/ExtensionMessage"
 import * as path from "path"
 import { formatResponse } from "@/core/prompts/responses"
@@ -13,6 +13,7 @@ export interface FindSymbolReferencesArgs {
     symbols: string | string[]
     paths: string | string[]
     find_type?: "definition" | "reference" | "both"
+    include_anchors?: boolean
 }
 
 export const find_symbol_references_spec: DiracToolSpec = {
@@ -45,6 +46,13 @@ export const find_symbol_references_spec: DiracToolSpec = {
                 'Specifies the type of references to find. "definition" returns only definitions, "reference" returns only references, and "both" (default) returns both.',
             usage: '"reference"',
         },
+        {
+            name: "include_anchors",
+            required: false,
+            type: "boolean",
+            instruction: "Optional. When true, returns source lines prefixed with stable hash anchors usable by edit_file. Default false.",
+            usage: "true",
+        },
     ],
 }
 
@@ -63,6 +71,7 @@ export class FindSymbolReferencesTool implements IDiracTool<FindSymbolReferences
         const symbols = Array.isArray(args.symbols) ? args.symbols : args.symbols ? [args.symbols] : []
         const relPaths = Array.isArray(args.paths) ? args.paths : args.paths ? [args.paths] : []
         const findType = args.find_type || "both"
+        const includeAnchors = args.include_anchors === true
 
         if (symbols.length === 0 || relPaths.length === 0) {
             this.incrementMistakeCount(env)
@@ -85,7 +94,7 @@ export class FindSymbolReferencesTool implements IDiracTool<FindSymbolReferences
                 return `No ${findType === "both" ? "references or definitions" : findType + "s"} found for symbols: ${symbols.join(", ")}.`
             }
 
-            const output = await this.formatResults(fileHitsMap, env)
+            const output = await this.formatResults(fileHitsMap, env, includeAnchors)
             env.orchestration.setTaskState("consecutiveMistakeCount", 0)
             return output.trim()
         } catch (error: any) {
@@ -207,7 +216,7 @@ export class FindSymbolReferencesTool implements IDiracTool<FindSymbolReferences
         return fileHitsMap
     }
 
-    private async formatResults(fileHitsMap: Map<string, any[]>, env: IToolEnvironment): Promise<string> {
+    private async formatResults(fileHitsMap: Map<string, any[]>, env: IToolEnvironment, includeAnchors: boolean): Promise<string> {
         let output = ""
         const sortedFiles = Array.from(fileHitsMap.keys()).sort()
 
@@ -237,8 +246,8 @@ export class FindSymbolReferencesTool implements IDiracTool<FindSymbolReferences
                 for (const hit of mergedHits) {
                     const hitSymbols = Array.from(hit.symbols).join(", ")
                     const lineContent = lines[hit.startLine]
-                    const formattedLine = formatLineWithHash(lineContent, anchors[hit.startLine])
-                    fileRefs.push(`  (${hitSymbols}) ${formattedLine.trim()}`)
+                    const formattedLine = formatLineForModel(lineContent, anchors[hit.startLine], includeAnchors)
+                    fileRefs.push(`  (${hitSymbols}) ${formattedLine}`)
                 }
 
                 const relPath = path.relative(env.config.cwd, absFilePath)

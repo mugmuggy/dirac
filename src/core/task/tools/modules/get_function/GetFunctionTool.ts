@@ -10,6 +10,7 @@ import { TOOL_EXAMPLES } from "../../../../prompts/tool-examples"
 export interface GetFunctionArgs {
     paths: string[]
     function_names: string[]
+    include_anchors?: boolean
 }
 
 export const get_function_spec: DiracToolSpec = {
@@ -33,6 +34,13 @@ export const get_function_spec: DiracToolSpec = {
             items: { type: "string" },
             instruction: "Exact names of the functions or methods to extract.",
             usage: '["calculateTotal", "StringHelper.format"]',
+        },
+        {
+            name: "include_anchors",
+            required: false,
+            type: "boolean",
+            instruction: "Optional. When true, returns source lines prefixed with stable hash anchors usable by edit_file. Default false.",
+            usage: "true",
         },
     ],
 }
@@ -58,6 +66,7 @@ export class GetFunctionTool implements IDiracTool<GetFunctionArgs> {
     async processCall(args: GetFunctionArgs, env: IToolEnvironment): Promise<any> {
         const paths = Array.isArray(args.paths) ? args.paths : args.paths ? [args.paths] : []
         const functionNames = Array.isArray(args.function_names) ? args.function_names : args.function_names ? [args.function_names] : []
+        const includeAnchors = args.include_anchors === true
 
         if (paths.length === 0 || functionNames.length === 0) {
             return this.handleMissingParameters(paths, env)
@@ -68,7 +77,7 @@ export class GetFunctionTool implements IDiracTool<GetFunctionArgs> {
         const functionHashes = env.context.task.get<Record<string, string>>("functionHashes") || {}
 
         for (const relPath of paths) {
-            const result = await this.processFile(relPath, functionNames, functionHashes, env)
+            const result = await this.processFile(relPath, functionNames, functionHashes, env, includeAnchors)
             results.push(result.content)
             for (const name of result.foundNames) {
                 foundNamesTotal.add(name)
@@ -103,6 +112,7 @@ export class GetFunctionTool implements IDiracTool<GetFunctionArgs> {
         functionNames: string[],
         functionHashes: Record<string, string>,
         env: IToolEnvironment,
+        includeAnchors: boolean,
     ): Promise<{ content: string; foundNames: string[] }> {
         const isSubagent = env.config.isSubagentExecution
         let card: any | undefined
@@ -116,10 +126,10 @@ export class GetFunctionTool implements IDiracTool<GetFunctionArgs> {
                     collapsed: true,
                 })
                 : undefined
-            const result = await env.ast.getFunctions(absolutePath, displayPath, functionNames)
+            const result = await env.ast.getFunctions(absolutePath, displayPath, functionNames, includeAnchors)
 
             if (result) {
-                const processedFuncs = this.processFunctionHashes(relPath, result.formattedContent, functionHashes)
+                const processedFuncs = this.processFunctionHashes(relPath, result.formattedContent, functionHashes, includeAnchors)
                 const bodyLines = result.foundNames.map((name) => `✓ ${name}`)
                 await card?.update({
                     header: `Extracted ${functionNames[0]}${functionNames.length > 1 ? ` (+${functionNames.length - 1} more)` : ""} from ${displayPath}`,
@@ -146,7 +156,7 @@ export class GetFunctionTool implements IDiracTool<GetFunctionArgs> {
         }
     }
 
-    private processFunctionHashes(relPath: string, formattedContent: string, functionHashes: Record<string, string>): string[] {
+    private processFunctionHashes(relPath: string, formattedContent: string, functionHashes: Record<string, string>, includeAnchors: boolean): string[] {
         const individualFuncs = formattedContent.split("\n\n---\n\n")
         const processedFuncs: string[] = []
 
@@ -157,7 +167,7 @@ export class GetFunctionTool implements IDiracTool<GetFunctionArgs> {
             if (functionName) {
                 const currentHashMatch = funcContent.match(/\[Function Hash: ([a-f0-9]+)\]/)
                 const currentHash = currentHashMatch ? currentHashMatch[1] : undefined
-                const cacheKey = `${relPath}::${functionName}`
+                const cacheKey = `${relPath}::${functionName}#${includeAnchors ? "anchored" : "plain"}`
                 const lastKnownHash = functionHashes[cacheKey]
 
                 if (currentHash && lastKnownHash === currentHash) {

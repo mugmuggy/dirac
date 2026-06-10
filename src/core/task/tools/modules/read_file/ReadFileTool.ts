@@ -4,13 +4,15 @@ import { DiracIcon } from "@/shared/icons"
 import { DiracToolSpec, DiracDefaultTool } from "@/shared/tools"
 import { formatResponse } from "../../../../prompts/responses"
 import { SurfaceType } from "../../interfaces/SurfaceType"
-import { hashLines, contentHash } from "@utils/line-hashing"
+import { contentHash, formatLinesForModel } from "@utils/line-hashing"
+import { AnchorStateManager } from "@utils/AnchorStateManager"
 import { CardStatus } from "@/shared/ExtensionMessage"
 
 export interface ReadFileArgs {
     paths: string[]
     start_line?: number
     end_line?: number
+    include_anchors?: boolean
 }
 
 export const read_file_spec: DiracToolSpec = {
@@ -41,6 +43,13 @@ export const read_file_spec: DiracToolSpec = {
             instruction: "Optional. If not supplied, the output will go until the last line",
             usage: "50",
         },
+        {
+            name: "include_anchors",
+            required: false,
+            type: "boolean",
+            instruction: "Optional. When true, returns source lines prefixed with stable hash anchors usable by edit_file. Default false.",
+            usage: "true",
+        },
     ],
 }
 
@@ -56,6 +65,7 @@ export class ReadFileTool implements IDiracTool<ReadFileArgs> {
     async processCall(args: ReadFileArgs, env: IToolEnvironment): Promise<any> {
         const paths = Array.isArray(args.paths) ? args.paths : args.paths ? [args.paths] : []
         const { start_line, end_line } = args
+        const includeAnchors = args.include_anchors === true
         const startLineNum = start_line ? Number(start_line) : undefined
         const endLineNum = end_line ? Number(end_line) : undefined
 
@@ -90,6 +100,7 @@ export class ReadFileTool implements IDiracTool<ReadFileArgs> {
                 endLineNum,
                 fileHashes,
                 env,
+                includeAnchors,
             )
             if (success) {
                 anySucceeded = true
@@ -120,6 +131,7 @@ export class ReadFileTool implements IDiracTool<ReadFileArgs> {
         endLineNum: number | undefined,
         fileHashes: Record<string, string>,
         env: IToolEnvironment,
+        includeAnchors: boolean,
     ): Promise<{ success: boolean; result: string; contentBlock?: any }> {
         const MAX_FILE_READ_SIZE = 50 * 1024 // 50KB
         const header = isMultiFile ? `--- ${relPath} ---\n` : ""
@@ -160,7 +172,8 @@ export class ReadFileTool implements IDiracTool<ReadFileArgs> {
             const contentBlock = fileContent.imageBlock
 
             const currentHash = contentHash(fileContent.text)
-            const lastHash = fileHashes[relPath]
+            const cacheKey = `${relPath}#${includeAnchors ? "anchored" : "plain"}`
+            const lastHash = fileHashes[cacheKey]
 
             let resultText = ""
             if (lastHash === currentHash && !startLineNum && !endLineNum) {
@@ -174,27 +187,31 @@ export class ReadFileTool implements IDiracTool<ReadFileArgs> {
                     await card.finalize(CardStatus.SUCCESS)
                 }
             } else {
-                let hashedContent = hashLines(fileContent.text, absolutePath, env.config.ulid)
+                const lines = fileContent.text.split(/\r?\n/)
+                const anchors = AnchorStateManager.reconcile(absolutePath, lines, env.config.ulid)
+                let formattedContent = includeAnchors
+                    ? formatLinesForModel(lines, anchors, true)
+                    : fileContent.text
                 let totalLineCount: number | undefined
                 if (startLineNum || endLineNum) {
-                    const lines = hashedContent.split("\n")
-                    totalLineCount = lines.length
+                    const contentLines = includeAnchors ? formattedContent.split("\n") : lines
+                    totalLineCount = contentLines.length
                     const start = Math.max(0, (startLineNum || 1) - 1)
-                    const end = Math.min(lines.length, endLineNum || lines.length)
-                    const sliced = lines.slice(start, end)
-                    if (sliced.length === 0 && lines.length > 0) {
-                        const msg = (end >= start) ? `start_line ${startLineNum} exceeds file length (${lines.length} lines). No content in specified range.` : `start_line ${startLineNum} cannot be smaller than end_line ${endLineNum}.`
+                    const end = Math.min(contentLines.length, endLineNum || contentLines.length)
+                    const sliced = contentLines.slice(start, end)
+                    if (sliced.length === 0 && contentLines.length > 0) {
+                        const msg = (end >= start) ? `start_line ${startLineNum} exceeds file length (${contentLines.length} lines). No content in specified range.` : `start_line ${startLineNum} cannot be smaller than end_line ${endLineNum}.`
                         if (card) {
                             await card.update({ status: CardStatus.ERROR, body: `✕ ${msg}` })
                             await card.finalize(CardStatus.ERROR)
                         }
                         return { success: false, result: `${header}${msg}` }
                     }
-                    hashedContent = sliced.join("\n")
+                    formattedContent = sliced.join("\n")
                 }
                 const lineCountSuffix = totalLineCount !== undefined ? `\n[Total lines: ${totalLineCount}]` : ""
-                resultText = `${header}[File Hash: ${currentHash}]${lineCountSuffix}\n${hashedContent}`
-                fileHashes[relPath] = currentHash
+                resultText = `${header}[File Hash: ${currentHash}]${lineCountSuffix}\n${formattedContent}`
+                fileHashes[cacheKey] = currentHash
 
                 if (card) {
                     const range = startLineNum || endLineNum ? `lines ${startLineNum || 1} to ${endLineNum || "end"}` : "full file"

@@ -1,6 +1,5 @@
 sample.rs::outer_rust.nested_mod.mod_func
 [Function Hash: 274dd87d]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 pub fn mod_func() {
             println!("Inside nested mod");
         }

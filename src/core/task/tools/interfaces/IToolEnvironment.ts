@@ -136,6 +136,7 @@ export interface ISystemTrait {
             contextLines?: number
             excludeFilePatterns?: string[]
             debugLog?: (info: Record<string, any>) => Promise<void>
+            includeAnchors?: boolean
         },
     ): Promise<string>
 
@@ -314,17 +315,20 @@ export interface IOrchestrationTrait {
 
 export interface IASTTrait {
     /**
-     * Returns a skeleton of the file (classes, functions, etc.) with stable hash anchors.
+     * Returns a skeleton of the file (classes, functions, etc.). Anchors are reconciled internally
+     * and included in output only when includeAnchors is true.
      */
-    getSkeleton(path: string, options?: { showCallGraph?: boolean }): Promise<string>
+    getSkeleton(path: string, options?: { showCallGraph?: boolean; includeAnchors?: boolean }): Promise<string>
 
     /**
-     * Returns specific functions from a file with stable hash anchors.
+     * Returns specific functions from a file. Anchors are reconciled internally
+     * and included in output only when includeAnchors is true.
      */
     getFunctions(
         absolutePath: string,
         relPath: string,
         functionNames: string[],
+        includeAnchors?: boolean,
     ): Promise<{ formattedContent: string; foundNames: string[] } | null>
 }
 

@@ -1,6 +1,5 @@
 sample.py::ComplexDecorators.with_comment
 [Function Hash: 727c63be]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 class ComplexDecorators:
 ...
 # Comment between decorator and function

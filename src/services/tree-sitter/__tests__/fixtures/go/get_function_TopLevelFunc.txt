@@ -1,6 +1,5 @@
 sample.go::TopLevelFunc
 [Function Hash: 1259303a]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 // TopLevelFunc is a top-level function.
 func TopLevelFunc(x int) int {
 	obj := NewGoStruct("example")

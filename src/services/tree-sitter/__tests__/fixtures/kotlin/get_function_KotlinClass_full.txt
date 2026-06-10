@@ -1,6 +1,5 @@
 sample.kt::KotlinClass
 [Function Hash: 99b51c44]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 class KotlinClass(var name: String) {
 
     /**

@@ -1,6 +1,5 @@
 sample.cpp::MyNamespace.NamespaceClass.doSomething
 [Function Hash: 2beb1cbd]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 void doSomething() {
             std::cout << "Doing something in MyNamespace" << std::endl;
         }

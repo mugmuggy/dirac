@@ -1,6 +1,5 @@
 sample.php::PhpClass.getName
 [Function Hash: 8fe05ab2]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /**
      * getName returns the name.
      */

@@ -1,6 +1,5 @@
 --- sample.py ---
-Stable Anchors are provided with each line.
- |----
+|----
 │class PythonClass:
 │    # Lines: 19
 |----

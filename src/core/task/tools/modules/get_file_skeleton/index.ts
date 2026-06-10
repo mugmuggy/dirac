@@ -7,6 +7,7 @@ import { CardStatus } from "../../../../../shared/ExtensionMessage"
 
 export interface GetFileSkeletonArgs {
     paths: string[]
+    include_anchors?: boolean
 }
 
 export const get_file_skeleton_spec: DiracToolSpec = {
@@ -23,6 +24,13 @@ export const get_file_skeleton_spec: DiracToolSpec = {
             instruction: "An array of relative paths to the source files.",
             usage: '["src/utils/math.ts", "src/utils/string.py"]',
         },
+        {
+            name: "include_anchors",
+            required: false,
+            type: "boolean",
+            instruction: "Optional. When true, returns source lines prefixed with stable hash anchors usable by edit_file. Default false.",
+            usage: "true",
+        },
     ],
 }
 
@@ -37,6 +45,7 @@ export class GetFileSkeletonTool implements IDiracTool<GetFileSkeletonArgs, stri
 
     async processCall(args: GetFileSkeletonArgs, env: IToolEnvironment): Promise<string> {
         const { paths } = args
+        const includeAnchors = args.include_anchors === true
 
         if (!paths || paths.length === 0) {
             const currentMistakes = env.orchestration.getTaskState("consecutiveMistakeCount")
@@ -61,7 +70,7 @@ export class GetFileSkeletonTool implements IDiracTool<GetFileSkeletonArgs, stri
                     cards.set(absolutePath, fileCard)
                 }
                 try {
-                    const skeleton = await env.ast.getSkeleton(absolutePath, { showCallGraph: true })
+                    const skeleton = await env.ast.getSkeleton(absolutePath, { showCallGraph: true, includeAnchors })
                     skeletons.push({ path: displayPath, content: skeleton || `No definitions found in ${relPath}` })
                     if (cards) {
                         const defCount = (skeleton || "").split("\n").filter((l: string) => l.trim().length > 0).length
@@ -92,7 +101,9 @@ export class GetFileSkeletonTool implements IDiracTool<GetFileSkeletonArgs, stri
 
 
             const result = skeletons
-                .map((s) => `--- ${s.path} ---\nStable Anchors are provided with each line.\n ${s.content}`)
+                .map((s) => includeAnchors
+                    ? `--- ${s.path} ---\nStable Anchors are provided with each line.\n ${s.content}`
+                    : `--- ${s.path} ---\n${s.content}`)
                 .join("\n\n")
 
             const hasFailure = skeletons.some(

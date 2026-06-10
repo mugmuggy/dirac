@@ -1,6 +1,5 @@
 sample.py::outer_func.NestedClass.nested_method
 [Function Hash: fb35e695]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
     class NestedClass:
 ...
 def nested_method(self):

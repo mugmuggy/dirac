@@ -11,33 +11,68 @@ export const ANCHOR_DELIMITER = "§"
  * @returns The anchor delimiter string
  */
 export function getDelimiter(): string {
-	return ANCHOR_DELIMITER
+    return ANCHOR_DELIMITER
 }
 
 /**
- * Helper to escape characters for use in a regular expression.
+ * Removes a hash anchor prefix from a line when the line starts with one.
  */
-function escapeRegExp(string: string) {
-	return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+function stripAnchorPrefix(line: string, offset = 0): string {
+    const delimiterIndex = line.indexOf(ANCHOR_DELIMITER, offset)
+    if (delimiterIndex === -1) {
+        return line
+    }
+
+    const prefix = line.substring(offset, delimiterIndex)
+    if (!/^[A-Z][a-zA-Z]*$/.test(prefix)) {
+        return line
+    }
+
+    return line.substring(0, offset) + line.substring(delimiterIndex + ANCHOR_DELIMITER.length)
 }
 
 /**
- * Strips hash prefixes from a content string.
- * Removes patterns like "Apple" followed by the delimiter from each line.
- * Anchors are guaranteed to start with a capital letter.
+ * Strips hash prefixes from raw content.
+ * Only removes a prefix when the line starts directly with an anchor word followed by the delimiter.
+ * Interior anchors and indented anchor-like literals are preserved exactly.
  *
  * @param content - The content containing hashed lines
- * @returns The clean content without hashes
+ * @returns The clean content without line-start hashes
  */
 export function stripHashes(content: string): string {
-	if (!content) {
-		return ""
-	}
+    if (!content) {
+        return ""
+    }
 
-	// Regex matches anchor patterns (alphabetic words starting with a capital letter) followed by the delimiter.
-	// Uses a word boundary \b to ensure we match the anchor accurately.
-	const delimiterRegex = new RegExp(`\\b[A-Z][a-zA-Z]*?${escapeRegExp(ANCHOR_DELIMITER)}`, "g")
-	return content.replace(delimiterRegex, "")
+    return content
+        .split("\n")
+        .map((line) => stripAnchorPrefix(line))
+        .join("\n")
+}
+
+/**
+ * Strips hash prefixes from diff-formatted content.
+ * Preserves a leading diff marker (+, -, or space) and removes an anchor immediately after it.
+ * Lines without a diff marker use the same behavior as stripHashes.
+ *
+ * @param content - The diff content containing hashed lines
+ * @returns The clean diff content without anchor prefixes
+ */
+export function stripHashesFromDiff(content: string): string {
+    if (!content) {
+        return ""
+    }
+
+    return content
+        .split("\n")
+        .map((line) => {
+            if (line.length > 0 && (line[0] === "+" || line[0] === "-" || line[0] === " ")) {
+                return stripAnchorPrefix(line, 1)
+            }
+
+            return stripAnchorPrefix(line)
+        })
+        .join("\n")
 }
 
 /**
@@ -48,9 +83,9 @@ export function stripHashes(content: string): string {
  * @returns The extracted ID
  */
 export function extractId(ref: string): string {
-	if (!ref) {
-		return ""
-	}
-	const delimiterIndex = ref.indexOf(ANCHOR_DELIMITER)
-	return delimiterIndex === -1 ? ref : ref.substring(0, delimiterIndex)
+    if (!ref) {
+        return ""
+    }
+    const delimiterIndex = ref.indexOf(ANCHOR_DELIMITER)
+    return delimiterIndex === -1 ? ref : ref.substring(0, delimiterIndex)
 }

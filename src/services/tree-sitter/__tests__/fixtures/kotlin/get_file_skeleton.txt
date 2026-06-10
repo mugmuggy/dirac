@@ -1,6 +1,5 @@
 --- sample.kt ---
-Stable Anchors are provided with each line.
- |----
+|----
 │package com.example
 |----
 │class KotlinClass(var name: String) {

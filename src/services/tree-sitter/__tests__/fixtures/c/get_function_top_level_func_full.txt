@@ -1,6 +1,5 @@
 sample.c::top_level_func
 [Function Hash: 0bf33f0c]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 // top_level_func function.
 int top_level_func(int x) {
     MyStruct s;

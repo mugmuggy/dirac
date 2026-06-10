@@ -1,6 +1,5 @@
 sample.kt::KotlinClass.getName
 [Function Hash: 96ec8232]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /**
      * getName returns the name.
      */

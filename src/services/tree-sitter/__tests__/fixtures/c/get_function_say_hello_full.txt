@@ -1,6 +1,5 @@
 sample.c::say_hello
 [Function Hash: dd118113]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 // say_hello function implementation.
 void say_hello(const char* name) {
     printf("Hello, %s!\n", name);

@@ -1,13 +1,11 @@
 sample.ts::MyInterface.getName
 [Function Hash: 323c56d8]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 getName(): string
 
 ---
 
 sample.ts::MyClass.getName
 [Function Hash: 98b0419f]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /**
 	 * Gets the name.
 	 */

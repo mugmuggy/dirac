@@ -1,6 +1,5 @@
 sample.rs::outer_rust
 [Function Hash: 4af8a635]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /// A top-level function.
 pub fn outer_rust() {
     /// Nested function in Rust.

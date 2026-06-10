@@ -1,6 +1,5 @@
 sample.rs::get_value
 [Function Hash: 4a255b9d]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 /// Gets the value.
     pub fn get_value(&self) -> i32 {
         self.value

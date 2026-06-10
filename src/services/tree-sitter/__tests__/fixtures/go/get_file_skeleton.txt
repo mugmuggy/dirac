@@ -1,6 +1,5 @@
 --- sample.go ---
-Stable Anchors are provided with each line.
- |----
+|----
 │package main
 |----
 │type GoStruct struct {

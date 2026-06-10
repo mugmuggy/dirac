@@ -1,6 +1,5 @@
 sample.rb::SampleModule.module_func
 [Function Hash: c0d380f2]
-All Hash Anchors provided below are stable and can be used with edit_file directly.
 def self.module_func
     "hello"
   end

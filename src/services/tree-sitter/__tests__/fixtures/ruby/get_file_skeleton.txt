@@ -1,6 +1,5 @@
 --- sample.rb ---
-Stable Anchors are provided with each line.
- |----
+|----
 │class RubyClass
 │    # Lines: 16
 |----

@@ -1,6 +1,5 @@
 --- sample.c ---
-Stable Anchors are provided with each line.
- |----
+|----
 │void say_hello(const char* name) {
 │    # Lines: 3
 |----
