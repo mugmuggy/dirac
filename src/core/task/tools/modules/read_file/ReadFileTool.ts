@@ -84,6 +84,9 @@ export class ReadFileTool implements IDiracTool<ReadFileArgs> {
         if (endLineNum !== undefined && endLineNum < 1) {
             throw new Error("Invalid end_line: must be >= 1.")
         }
+        if (startLineNum !== undefined && endLineNum !== undefined && startLineNum > endLineNum) {
+            throw new Error(`Invalid line range: start_line ${startLineNum} cannot be greater than end_line ${endLineNum}.`)
+        }
 
         const results: string[] = []
         const contentBlocks: any[] = []
@@ -196,17 +199,18 @@ export class ReadFileTool implements IDiracTool<ReadFileArgs> {
                 if (startLineNum || endLineNum) {
                     const contentLines = includeAnchors ? formattedContent.split("\n") : lines
                     totalLineCount = contentLines.length
-                    const start = Math.max(0, (startLineNum || 1) - 1)
-                    const end = Math.min(contentLines.length, endLineNum || contentLines.length)
-                    const sliced = contentLines.slice(start, end)
-                    if (sliced.length === 0 && contentLines.length > 0) {
-                        const msg = (end >= start) ? `start_line ${startLineNum} exceeds file length (${contentLines.length} lines). No content in specified range.` : `start_line ${startLineNum} cannot be smaller than end_line ${endLineNum}.`
+                    const startLine = startLineNum || 1
+                    if (startLine > contentLines.length) {
+                        const msg = `start_line ${startLine} exceeds file length (${contentLines.length} lines). No content in specified range.`
                         if (card) {
                             await card.update({ status: CardStatus.ERROR, body: `✕ ${msg}` })
                             await card.finalize(CardStatus.ERROR)
                         }
                         return { success: false, result: `${header}${msg}` }
                     }
+                    const start = startLine - 1
+                    const end = Math.min(contentLines.length, endLineNum || contentLines.length)
+                    const sliced = contentLines.slice(start, end)
                     formattedContent = sliced.join("\n")
                 }
                 const lineCountSuffix = totalLineCount !== undefined ? `\n[Total lines: ${totalLineCount}]` : ""
