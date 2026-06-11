@@ -120,6 +120,8 @@ export const styles = {
         planModeTint: { color: "yellow" },
         completion: { color: "green", bold: true },
         divider: { color: "gray", dimColor: true },
+        reasoning: { color: "gray" },
+        reasoningTitle: { color: "gray", dimColor: true },
         typeChangeSep: { color: "gray" },
     },
 } as const

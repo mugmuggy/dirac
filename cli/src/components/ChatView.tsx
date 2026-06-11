@@ -40,39 +40,22 @@
  * - log-update: node_modules/ink/build/log-update.js (eraseLines logic)
  */
 
-import type { ApiProvider, ModelInfo } from "@shared/api"
 
-import { DiracMessageType, UIActionButtonType } from "@shared/ExtensionMessage"
+import { DiracMessageType, TaskStatus, UIActionButtonType } from "@shared/ExtensionMessage"
 import { DiracAskResponse } from "@shared/WebviewMessage"
-import { getApiMetrics, getLastApiReqTotalTokens } from "@shared/getApiMetrics"
-import { EmptyRequest } from "@shared/proto/dirac/common"
-import type { SlashCommandInfo } from "@shared/proto/dirac/slash"
-import { CLI_ONLY_COMMANDS } from "@shared/slashCommands"
-import { getProviderDefaultModelId, getProviderModelIdKey } from "@shared/storage"
 import { getRandomQuote } from "@/shared/quotes"
 import type { Mode } from "@shared/storage/types"
 import { Box, Static, Text, useStdout } from "ink"
 import path from "node:path"
 import Image from "ink-picture"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { getAvailableSlashCommands } from "@/core/controller/slash/getAvailableSlashCommands"
 import { StateManager } from "@/core/storage/StateManager"
-import { arePathsEqual } from "@/utils/path"
 import { COLORS } from "../constants/colors"
 import { useTaskContext, useTaskState } from "../context/TaskContext"
-import { useHomeEndKeys } from "../hooks/useHomeEndKeys"
-import { useRawBackspaceKeys } from "../hooks/useRawBackspaceKeys"
 import { useIsSpinnerActive, useLastCompletedAskMessage } from "../hooks/useStateSubscriber"
-import { useTextInput } from "../hooks/useTextInput"
 import { useTerminalSize } from "../hooks/useTerminalSize"
 import { setTerminalTitle } from "../utils/display"
-import {
-    checkAndWarnRipgrepMissing,
-    extractMentionQuery,
-    type FileSearchResult, searchWorkspaceFiles
-} from "../utils/file-search"
-import { parseImagesFromInput, processImagePaths } from "../utils/parser"
-import { extractSlashQuery, filterCommands, sortCommandsWorkflowsFirst } from "../utils/slash-commands"
+import { processImagePaths } from "../utils/parser"
 import { ActionButtons } from "./ActionButtons"
 
 import { AskPrompt } from "./AskPrompt"
@@ -80,7 +63,6 @@ import { ChatMessage } from "./ChatMessage"
 import { FileMentionMenu } from "./FileMentionMenu"
 import { HelpPanelContent } from "./HelpPanelContent"
 import { HistoryPanelContent } from "./HistoryPanelContent"
-import { providerModels } from "./ModelPicker"
 import { SettingsPanelContent } from "./SettingsPanelContent"
 import { SkillsPanelContent } from "./SkillsPanelContent"
 import { SlashCommandMenu } from "./SlashCommandMenu"
@@ -88,32 +70,11 @@ import { ThinkingIndicator } from "./ThinkingIndicator"
 import { ChatFooter } from "./ChatFooter"
 import { ChatHeader } from "./ChatHeader"
 import { ChatInputBar } from "./ChatInputBar"
-import { useChatInputHandler } from "../hooks/useChatInputHandler"
-import { useChatMessages } from "../hooks/useChatMessages"
+import { useComposer, type ActivePanel, type ComposerActions } from "../hooks/useComposer"
+import { useChatTimeline } from "../hooks/useChatTimeline"
+import { useChatFooterStatus } from "../hooks/useChatFooterStatus"
 import { useChatTask } from "../hooks/useChatTask"
-import {
-    expandPastedTexts,
-    getAskPromptType,
-    getInputStorageKey,
-    isYoloSuppressed,
-    parseAskOptions,
-} from "../utils/chat"
-import { getGitBranch, getGitDiffStats, type GitDiffStats } from "../utils/git"
-import { detectBatches, type MessageBatch } from "./modular-ui/BatchGrouping"
-import { BatchSummaryCard } from "./modular-ui/BatchSummaryCard"
-
-/**
- * Persistent input storage that survives React remounts (e.g., during terminal resize).
- * Keyed by a stable identifier so each task/session maintains its own input state.
- */
-interface PersistedInputState {
-    text: string
-    cursorPos: number
-    pastedTexts: Map<number, string>
-    pasteCounter: number
-}
-
-const inputStateStorage = new Map<string, PersistedInputState>()
+import { expandPastedTexts, getAskPromptType, isYoloSuppressed, parseAskOptions } from "../utils/chat"
 
 interface ChatViewProps {
     controller?: any
@@ -125,12 +86,6 @@ interface ChatViewProps {
     taskId?: string
 }
 
-const SEARCH_DEBOUNCE_MS = 150
-const RIPGREP_WARNING_DURATION_MS = 5000
-const MAX_SEARCH_RESULTS = 15
-const DEFAULT_CONTEXT_WINDOW = 200000
-const PASTE_COLLAPSE_THRESHOLD = 10000 // Characters before showing placeholder
-const MAX_HISTORY_ITEMS = 20 // Max history items to navigate with up/down arrows
 
 export const ChatView: React.FC<ChatViewProps> = ({
     controller,
@@ -149,43 +104,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const { isActive: isSpinnerActive, startTime: spinnerStartTime } = useIsSpinnerActive()
     const ctrl = useMemo(() => controller || taskController, [controller, taskController])
 
-    const {
-        text: textInput,
-        cursorPos,
-        setText: setTextInput,
-        setCursorPos,
-        handleKeyboardSequence,
-        handleCtrlShortcut,
-        deleteCharsBefore,
-        deleteCharsAfter,
-        insertText: insertTextAtCursor,
-        getText,
-        getCursorPos,
-    } = useTextInput()
+    const resetComposerInputRef = useRef<() => void>(() => { })
+    const composerActionsRef = useRef<ComposerActions>({
+        handleAskShortcuts: () => false,
+        handleSubmit: () => { },
+        handleExit: () => { },
+        clearViewAndResetTask: () => { },
+        handleButtonAction: () => { },
+        toggleMode: () => { },
+        toggleAutoApproveAll: () => { },
+        toggleTranscriptVerbosity: () => { },
+    })
 
-    const storageKey = useMemo(() => getInputStorageKey(ctrl, taskId), [ctrl, taskId])
-    const textInputRef = useMemo(() => ({ get current() { return getText() } }), [getText])
-    const cursorPosRef = useMemo(() => ({ get current() { return getCursorPos() } }), [getCursorPos])
-
-    const [fileResults, setFileResults] = useState<FileSearchResult[]>([])
-    const [selectedIndex, setSelectedIndex] = useState(0)
-    const [historyIndex, setHistoryIndex] = useState(-1)
-    const [savedInput, setSavedInput] = useState("")
-    const [isSearching, setIsSearching] = useState(false)
-    const [showRipgrepWarning, setShowRipgrepWarning] = useState(false)
     const [respondedToAsk, setRespondedToAsk] = useState<string | null>(null)
     const [userScrolled, setUserScrolled] = useState(false)
     const [cardExpansions, setCardExpansions] = useState<Map<string, "auto" | "expanded" | "collapsed">>(new Map())
-    const [batchExpanded, setBatchExpanded] = useState<Set<string>>(new Set())
-
-    const toggleCardExpansion = useCallback((cardId: string) => {
-        setCardExpansions((prev) => {
-            const next = new Map(prev)
-            const current = next.get(cardId) ?? "auto"
-            next.set(cardId, current === "expanded" ? "collapsed" : "expanded")
-            return next
-        })
-    }, [])
+    const [isVerboseTranscript, setIsVerboseTranscript] = useState(false)
 
     const handleCardCollapse = useCallback((cardId: string) => {
         setCardExpansions((prev) => {
@@ -195,56 +129,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
         })
     }, [])
 
-
-    const toggleBatchExpansion = useCallback((batchId: string) => {
-        setBatchExpanded((prev) => {
-            const next = new Set(prev)
-            if (next.has(batchId)) {
-                next.delete(batchId)
-            } else {
-                next.add(batchId)
-            }
-            return next
-        })
-    }, [])
-    const getIsCardExpanded = (card: { id: string; collapsed?: boolean }): boolean => {
+    const getIsCardExpanded = (card: { id: string; collapsed?: boolean; body?: string }): boolean => {
         const expansion = cardExpansions.get(card.id)
         if (expansion === "expanded") return true
         if (expansion === "collapsed") return false
-        // "auto" or undefined: respect the tool's `collapsed` preference
-        return card.collapsed === false
+        if (card.collapsed === false) return true
+        if (isVerboseTranscript && card.body) return true
+        return false
     }
 
-    const [pastedTexts, setPastedTexts] = useState<Map<number, string>>(() => {
-        return inputStateStorage.get(storageKey)?.pastedTexts ?? new Map()
-    })
-    const pasteCounterRef = useRef<number>(inputStateStorage.get(storageKey)?.pasteCounter ?? 0)
-    const lastPasteTimeRef = useRef<number>(0)
-    const activePasteNumRef = useRef<number>(0)
-    const activePasteStartPosRef = useRef<number>(0)
-    const activePasteLinesRef = useRef<number>(0)
-    const pasteUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+    const [activePanel, setActivePanel] = useState<ActivePanel>(null)
 
-    const [availableCommands, setAvailableCommands] = useState<SlashCommandInfo[]>([])
-    const [selectedSlashIndex, setSelectedSlashIndex] = useState(0)
-    const [slashMenuDismissed, setSlashMenuDismissed] = useState(false)
-    const lastSlashIndexRef = useRef<number>(-1)
 
-    const [activePanel, setActivePanel] = useState<
-        | {
-            type: "settings"
-            initialMode?: "model-picker" | "featured-models" | "provider-picker"
-            initialModelKey?: "actModelId" | "planModelId"
-        }
-        | { type: "history" }
-        | { type: "help" }
-        | { type: "skills" }
-        | null
-    >(null)
-
-    const [gitBranch, setGitBranch] = useState<string | null>(null)
-    const [gitDiffStats, setGitDiffStats] = useState<GitDiffStats | null>(null)
-
+    const dynamicTranscriptRows = Math.max(1, terminalRows - 14)
     const [mode, setMode] = useState<Mode>(() => {
         const stateManager = StateManager.get()
         return stateManager.getGlobalSettingsKey("mode") || "act"
@@ -255,66 +152,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
         () => StateManager.get().getGlobalSettingsKey("autoApproveAllToggled") ?? false,
     )
 
-
-    const [verboseBatch, setVerboseBatch] = useState<boolean>(
-        () => StateManager.get().getGlobalSettingsKey("verboseBatchToggled") ?? false,
-    )
-    const { displayMessages, committedMessages, liveMessages, taskSwitchKey, setTaskSwitchKey } = useChatMessages(
-        taskState.diracMessages || [],
-        taskState.activeVoiceStreamId,
-        taskState.isApiRequestActive,
-        taskState.taskStatus
-    )
+    const { displayMessages, staticItems, dynamicItems, taskSwitchKey, setTaskSwitchKey } = useChatTimeline({
+        messages: taskState.diracMessages || [],
+        activeVoiceStreamId: taskState.activeVoiceStreamId,
+        isApiRequestActive: taskState.isApiRequestActive,
+        taskStatus: taskState.taskStatus,
+        showHeader:
+            (taskState.diracMessages || []).some((message) => message.content?.type !== DiracMessageType.API_STATUS) ||
+            userScrolled,
+        dynamicRows: dynamicTranscriptRows,
+    })
 
     const { isProcessing, setIsProcessing, isExiting, handleCancel, handleExit, clearViewAndResetTask } = useChatTask({
         ctrl,
         taskId,
         initialPrompt,
         initialImages,
-        storageKey,
+        resetComposerInput: () => resetComposerInputRef.current(),
         onExit,
         onError,
         clearState,
-        setTextInput,
-        setCursorPos,
         setTaskSwitchKey,
     })
-
-    const handleHome = useCallback(() => setCursorPos(0), [setCursorPos])
-    const handleEnd = useCallback(() => setCursorPos(textInputRef.current.length), [setCursorPos])
-
-    useHomeEndKeys({
-        onHome: handleHome,
-        onEnd: handleEnd,
-        isActive: !activePanel,
-    })
-
-    useRawBackspaceKeys({
-        onBackspace: deleteCharsBefore,
-        onDelete: deleteCharsAfter,
-        isActive: !activePanel,
-    })
-
-    useEffect(() => {
-        const stored = inputStateStorage.get(storageKey)
-        if (stored) {
-            setTextInput(stored.text)
-            setCursorPos(stored.cursorPos)
-            setPastedTexts(stored.pastedTexts)
-            pasteCounterRef.current = stored.pasteCounter
-        }
-    }, [storageKey, setTextInput, setCursorPos])
-
-    useEffect(() => {
-        if (textInput || pastedTexts.size > 0) {
-            inputStateStorage.set(storageKey, {
-                text: textInput,
-                cursorPos,
-                pastedTexts: new Map(pastedTexts),
-                pasteCounter: pasteCounterRef.current,
-            })
-        }
-    }, [storageKey, textInput, cursorPos, pastedTexts])
 
     useEffect(() => {
         if (taskState.mode && taskState.mode !== mode) {
@@ -341,43 +200,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
         await ctrl?.postStateToWebview()
     }, [autoApproveAll, ctrl])
 
-    const toggleVerbose = useCallback(async () => {
-        const newValue = !verboseBatch
-        setVerboseBatch(newValue)
-        StateManager.get().setGlobalState("verboseBatchToggled", newValue)
-        await ctrl?.postStateToWebview()
-    }, [verboseBatch, ctrl])
+    const footerStatus = useChatFooterStatus({
+        ctrl,
+        mode,
+        taskState,
+    })
 
-    const provider = useMemo(() => {
-        const providerKey = mode === "act" ? "actModeApiProvider" : "planModeApiProvider"
-        const stateManagerValue = StateManager.get().getGlobalSettingsKey(providerKey) as string
-        if (stateManagerValue) {
-            return stateManagerValue
-        }
-        const configValue = (taskState.apiConfiguration as any)?.[providerKey] as string | undefined
-        if (configValue !== undefined) {
-            return configValue
-        }
-        return (StateManager.get().getGlobalSettingsKey(providerKey) as string) || ""
-    }, [mode, taskState.apiConfiguration])
+    const isWelcomeState = displayMessages.length === 0 && !userScrolled
 
-    const modelId = useMemo(() => {
-        if (!provider) return ""
-        const modelKey = getProviderModelIdKey(provider as ApiProvider, mode)
-        const stateManagerValue = StateManager.get().getGlobalSettingsKey(modelKey) as string
-        if (stateManagerValue) {
-            return stateManagerValue
-        }
-        const configValue = (taskState.apiConfiguration as any)?.[modelKey] as string | undefined
-        if (configValue !== undefined) {
-            return configValue
-        }
-        return (
-            (StateManager.get().getGlobalSettingsKey(modelKey) as string) ||
-            getProviderDefaultModelId(provider as ApiProvider) ||
-            ""
-        )
-    }, [mode, provider, taskState.apiConfiguration])
+    const lastCompletedAsk = useLastCompletedAskMessage()
+    const pendingAsk = lastCompletedAsk && respondedToAsk !== lastCompletedAsk.id ? lastCompletedAsk : null
+    const askType = pendingAsk ? getAskPromptType(pendingAsk) : "none"
+    const askOptions = pendingAsk && askType === "options" ? parseAskOptions(pendingAsk) : []
+
+    const {
+        textInput,
+        cursorPos,
+        setTextInput,
+        setCursorPos,
+        pastedTexts,
+        resetInput,
+        availableCommands,
+        filteredCommands,
+        selectedSlashIndex,
+        slashInfo,
+        showSlashMenu,
+        fileResults,
+        selectedIndex,
+        mentionInfo,
+        showFileMenu,
+        isSearching,
+        showRipgrepWarning,
+        imagePaths,
+    } = useComposer({
+        ctrl,
+        taskId,
+        mode,
+        workspacePath: footerStatus.workspacePath,
+        activePanel,
+        setActivePanel,
+        isSpinnerActive,
+        isProcessing,
+        yolo,
+        pendingAsk,
+        actionsRef: composerActionsRef,
+        isYoloSuppressed,
+        isWelcomeState,
+    })
+    resetComposerInputRef.current = resetInput
 
     const toggleMode = useCallback(async () => {
         const newMode: Mode = mode === "act" ? "plan" : "act"
@@ -390,120 +260,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
         }
     }, [mode, ctrl, textInput, pastedTexts])
 
-    const refs = useRef({
-        searchTimeout: null as NodeJS.Timeout | null,
-        lastQuery: "",
-        hasCheckedRipgrep: false,
-    })
-
-    const { prompt: _prompt, imagePaths } = parseImagesFromInput(textInput)
-    const mentionInfo = useMemo(() => extractMentionQuery(textInput), [textInput])
-    const slashInfo = useMemo(() => extractSlashQuery(textInput, cursorPos), [textInput, cursorPos])
-    const filteredCommands = useMemo(
-        () => filterCommands(availableCommands, slashInfo.query),
-        [availableCommands, slashInfo.query],
-    )
-
-    useEffect(() => {
-        if (slashInfo.slashIndex !== lastSlashIndexRef.current) {
-            lastSlashIndexRef.current = slashInfo.slashIndex
-            setSlashMenuDismissed(false)
-            setSelectedSlashIndex(0)
-        }
-    }, [slashInfo.slashIndex])
-
-    const workspacePath = useMemo(() => {
-        try {
-            const root = ctrl?.getWorkspaceManagerSync?.()?.getPrimaryRoot?.()
-            if (root?.path) return root.path
-        } catch { }
-        return process.cwd()
-    }, [ctrl])
-
-    useEffect(() => {
-        setGitBranch(getGitBranch(workspacePath))
-        setGitDiffStats(getGitDiffStats(workspacePath))
-    }, [workspacePath])
-
-    useEffect(() => {
-        const loadCommands = async () => {
-            if (!ctrl) return
-            try {
-                const response = await getAvailableSlashCommands(ctrl, EmptyRequest.create())
-                const cliCommands = response.commands.filter((cmd) => cmd.cliCompatible !== false)
-                const cliOnlyCommands: SlashCommandInfo[] = CLI_ONLY_COMMANDS.map((cmd) => ({
-                    name: cmd.name,
-                    description: cmd.description || "",
-                    section: cmd.section || "default",
-                    cliCompatible: true,
-                }))
-                setAvailableCommands([...cliOnlyCommands, ...sortCommandsWorkflowsFirst(cliCommands)])
-            } catch { }
-        }
-        loadCommands()
-    }, [ctrl])
-
-    const getHistoryItems = useCallback(() => {
-        const history = StateManager.get().getGlobalStateKey("taskHistory")
-        if (!history?.length) return []
-        const filtered = [...history]
-            .filter((item) =>
-                Boolean(
-                    (item.cwdOnTaskInitialization && arePathsEqual(item.cwdOnTaskInitialization, workspacePath)) ||
-                    (item.workspaceRootPath && arePathsEqual(item.workspaceRootPath, workspacePath)) ||
-                    (item.shadowGitConfigWorkTree && arePathsEqual(item.shadowGitConfigWorkTree, workspacePath)),
-                ),
-            )
-            .reverse()
-            .map((item) => item.task)
-            .slice(0, 20)
-            .filter(Boolean) as string[]
-        return [...new Set(filtered)]
-    }, [workspacePath])
-
-    const lastMsg = (taskState.diracMessages || [])[(taskState.diracMessages || []).length - 1]
-    useEffect(() => {
-        setGitDiffStats(getGitDiffStats(workspacePath))
-    }, [taskState.diracMessages?.length, taskState.activeVoiceStreamId, lastMsg?.id, workspacePath])
-
-    const isWelcomeState = displayMessages.length === 0 && !userScrolled
-
-    const staticItems = useMemo(() => {
-        const items: Array<
-            | { key: string; type: "header" }
-            | { key: string; type: "message"; message: (typeof displayMessages)[0] }
-            | { key: string; type: "batch"; batch: MessageBatch }
-        > = []
-        if (displayMessages.length > 0 || userScrolled) {
-            items.push({ key: "header", type: "header" })
-        }
-        const groups = detectBatches(committedMessages)
-        for (const group of groups) {
-            if (group.type === "single") {
-                items.push({ key: group.message.id, type: "message", message: group.message })
-            } else {
-                items.push({ key: group.batchId, type: "batch", batch: group })
-            }
-        }
-        return items
-    }, [committedMessages, displayMessages.length, userScrolled])
-
-    const lastCompletedAsk = useLastCompletedAskMessage()
-    const pendingAsk = lastCompletedAsk && respondedToAsk !== lastCompletedAsk.id ? lastCompletedAsk : null
-    const askType = pendingAsk ? getAskPromptType(pendingAsk) : "none"
-    const askOptions = pendingAsk && askType === "options" ? parseAskOptions(pendingAsk) : []
-
-    useEffect(() => {
-    }, [isProcessing])
-
-    useEffect(() => {
-    }, [lastCompletedAsk, respondedToAsk])
-
-    useEffect(() => {
-        if (pendingAsk) {
-        } else {
-        }
-    }, [pendingAsk])
 
     const sendAskResponse = useCallback(
         async (responseType: DiracAskResponse | string, text?: string, value?: string) => {
@@ -511,11 +267,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             if (!isProcessing) setIsProcessing(true)
             const expandedText = text ? expandPastedTexts(text, pastedTexts) : text
             setRespondedToAsk(pendingAsk.id)
-            setTextInput("")
-            setCursorPos(0)
-            setPastedTexts(new Map())
-            pasteCounterRef.current = 0
-            inputStateStorage.delete(storageKey)
+            resetInput()
             try {
                 await ctrl.task.submitCardResponse(pendingAsk.id, responseType, expandedText, undefined, undefined, value)
             } catch (error) {
@@ -523,11 +275,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 setIsProcessing(false)
             }
         },
-        [ctrl, pendingAsk, pastedTexts, storageKey, isProcessing, setTextInput, setCursorPos, setIsProcessing],
+        [ctrl, pendingAsk, pastedTexts, isProcessing, setIsProcessing, resetInput],
     )
 
     const uiActionState = taskState.uiActionState
     const sendingDisabled = uiActionState?.sendingDisabled ?? false
+
+    const hasGlobalAction = useCallback(
+        (action: UIActionButtonType) => uiActionState?.globalButtons.some((button) => button.action === action) ?? false,
+        [uiActionState],
+    )
+    const isCompletionChoiceActive = taskState.taskStatus === TaskStatus.COMPLETED || hasGlobalAction(UIActionButtonType.NEW_TASK)
+    const isResumeChoiceActive = taskState.taskStatus === TaskStatus.CANCELLED
 
     useEffect(() => {
         if (
@@ -551,18 +310,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         await sendAskResponse(DiracAskResponse.APPROVE)
                         break
                     case UIActionButtonType.REJECT:
-                        if (pendingAsk?.content.type === DiracMessageType.CARD) {
-                            const header = pendingAsk.content.card.header.toLowerCase()
-                            if (
-                                header.includes("resume") ||
-                                header.includes("completed") ||
-                                header.includes("result") ||
-                                header.includes("new task")
-                            ) {
-                                handleExit()
-                            } else {
-                                await sendAskResponse(DiracAskResponse.REJECT)
-                            }
+                        if (isCompletionChoiceActive || isResumeChoiceActive) {
+                            handleExit()
                         } else {
                             await sendAskResponse(DiracAskResponse.REJECT)
                         }
@@ -571,17 +320,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         await sendAskResponse(DiracAskResponse.APPROVE)
                         break
                     case UIActionButtonType.NEW_TASK:
-                        if (
-                            pendingAsk?.content.type === DiracMessageType.CARD &&
-                            pendingAsk.content.card.header.toLowerCase().includes("new task")
-                        ) {
-                            setRespondedToAsk(pendingAsk.id)
-                            setTextInput("")
-                            setCursorPos(0)
-                            await ctrl.initTask(pendingAsk.content.card.body || "")
-                        } else {
-                            await clearViewAndResetTask()
-                        }
+                        await clearViewAndResetTask()
                         break
                     case UIActionButtonType.CANCEL:
                         await handleCancel()
@@ -599,14 +338,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
         [
             ctrl,
             sendAskResponse,
-            pendingAsk,
             handleExit,
             handleCancel,
             clearViewAndResetTask,
             isProcessing,
             setIsProcessing,
-            setTextInput,
-            setCursorPos,
+            isCompletionChoiceActive,
+            isResumeChoiceActive,
         ],
     )
 
@@ -638,17 +376,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 }
             }
 
-            const header = card.header.toLowerCase()
-            if (header.includes("completed") || header.includes("result")) {
-                if (input.toLowerCase() === "q") {
-                    handleExit()
-                    return true
-                }
+            if (isCompletionChoiceActive && input.toLowerCase() === "q") {
+                handleExit()
+                return true
             }
 
             return false
         },
-        [pendingAsk, isProcessing, handleButtonAction, sendAskResponse, handleExit],
+        [pendingAsk, isProcessing, handleButtonAction, sendAskResponse, handleExit, isCompletionChoiceActive],
     )
 
     const handleSubmit = useCallback(
@@ -658,14 +393,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 const prompt = text.trim()
                 const normalized = prompt.toLowerCase()
                 const { card } = pendingAsk.content
-                const header = card.header.toLowerCase()
 
-                if (header.includes("resume") || header.includes("completed") || header.includes("result")) {
+                if (isCompletionChoiceActive || isResumeChoiceActive) {
                     if (normalized === "q" || normalized === "quit" || normalized === "exit") {
                         handleExit()
                         return
                     }
-                    if (!header.includes("completed") && !header.includes("result") && (normalized === "n" || normalized === "no")) {
+                    if (isResumeChoiceActive && (normalized === "n" || normalized === "no")) {
                         handleExit()
                         return
                     }
@@ -676,18 +410,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 } else {
                     await sendAskResponse(DiracAskResponse.MESSAGE, prompt)
                 }
-                setTextInput("")
-                setCursorPos(0)
+                resetInput()
                 return
             }
             setIsProcessing(true)
             const expandedText = expandPastedTexts(text, pastedTexts)
 
-            setTextInput("")
-            setCursorPos(0)
-            setPastedTexts(new Map())
-            pasteCounterRef.current = 0
-            inputStateStorage.delete(storageKey)
+            resetInput()
             try {
                 const validImages = await processImagePaths(images)
                 setTerminalTitle(expandedText.trim())
@@ -698,145 +427,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 setIsProcessing(false)
             }
         },
-        [
-            ctrl,
-            onError,
-            pastedTexts,
-            storageKey,
-            isProcessing,
-            setIsProcessing,
-            setTextInput,
-            setCursorPos,
-            pendingAsk,
-            handleExit,
-            sendAskResponse,
-        ],
+        [ctrl, onError, pastedTexts, isProcessing, setIsProcessing, pendingAsk, handleExit, sendAskResponse, resetInput, isCompletionChoiceActive, isResumeChoiceActive],
     )
 
-    useEffect(() => {
-        const { current: r } = refs
-        if (!mentionInfo.inMentionMode) {
-            setFileResults([])
-            setSelectedIndex(0)
-            if (r.searchTimeout) {
-                clearTimeout(r.searchTimeout)
-                r.searchTimeout = null
-            }
-            return
-        }
-        if (!r.hasCheckedRipgrep) {
-            r.hasCheckedRipgrep = true
-            if (checkAndWarnRipgrepMissing()) {
-                setShowRipgrepWarning(true)
-                setTimeout(() => setShowRipgrepWarning(false), 5000)
-            }
-        }
-        const { query } = mentionInfo
-        if (query === r.lastQuery) return
-        r.lastQuery = query
-        if (r.searchTimeout) clearTimeout(r.searchTimeout)
-        setIsSearching(true)
-        r.searchTimeout = setTimeout(async () => {
-            try {
-                let results: FileSearchResult[]
-                if (query.toLowerCase().startsWith("image")) {
-                    let imageQuery = ""
-                    if (query.toLowerCase() === "image") {
-                        imageQuery = ""
-                    } else if (query.toLowerCase().startsWith("image:")) {
-                        imageQuery = query.slice(6)
-                    } else {
-                        imageQuery = query.slice(5)
-                    }
-                    results = await searchWorkspaceFiles(imageQuery, workspacePath, 15, undefined, ["png", "jpg", "jpeg", "gif", "webp"])
-                } else {
-                    results = await searchWorkspaceFiles(query, workspacePath, 15)
-                }
-                setFileResults(results)
-                setSelectedIndex(0)
-            } catch {
-                setFileResults([])
-            } finally {
-                setIsSearching(false)
-            }
-        }, 150)
-        return () => {
-            if (r.searchTimeout) clearTimeout(r.searchTimeout)
-        }
-    }, [mentionInfo.inMentionMode, mentionInfo.query, workspacePath])
-
-    useChatInputHandler({
-        textInputRef,
-        cursorPosRef,
-        setTextInput,
-        setCursorPos,
-        activePanel,
-        setActivePanel,
-        handleAskShortcuts,
-        handleKeyboardSequence,
-        handleCtrlShortcut,
-        insertTextAtCursor,
-        toggleMode,
-        toggleAutoApproveAll,
-        toggleVerbose,
-        handleSubmit,
-        handleExit,
-        clearViewAndResetTask,
-        filteredCommands,
-        selectedSlashIndex,
-        setSelectedSlashIndex,
-        slashMenuDismissed,
-        setSlashMenuDismissed,
-        fileResults,
-        selectedIndex,
-        setSelectedIndex,
-        setFileResults,
-        getHistoryItems,
-        historyIndex,
-        setHistoryIndex,
-        savedInput,
-        setSavedInput,
-        isSpinnerActive,
-        isProcessing,
-        yolo,
-        pendingAsk,
-        handleButtonAction,
-        isYoloSuppressed,
-        lastPasteTimeRef,
-        activePasteNumRef,
-        activePasteLinesRef,
-        activePasteStartPosRef,
-        pasteCounterRef,
-        pasteUpdateTimeoutRef,
-        setPastedTexts,
-        PASTE_COLLAPSE_THRESHOLD: 10000,
-        PASTE_CHUNK_WINDOW_MS: 150,
-        PASTE_UPDATE_DEBOUNCE_MS: 50,
-        mode,
-        toggleCardExpansion,
-        currentCardId: pendingAsk?.id,
-        toggleBatchExpansion,
-        latestBatchId: staticItems.filter((i) => i.type === "batch").pop()?.key,
-    })
-
     const borderColor = mode === "act" ? COLORS.primaryBlue : "yellow"
-    const metrics = getApiMetrics(taskState.diracMessages || [])
-    const lastApiReqTotalTokens = useMemo(() => getLastApiReqTotalTokens(taskState.diracMessages || []), [taskState.diracMessages])
-    const contextWindowSize = useMemo(() => {
-        const providerData = providerModels[provider]
-        if (providerData && modelId in providerData.models) {
-            const modelInfo = providerData.models[modelId] as ModelInfo
-            if (modelInfo?.contextWindow) return modelInfo.contextWindow
-        }
-        return 200000
-    }, [provider, modelId])
-
-    const showSlashMenu = slashInfo.inSlashMode && !slashMenuDismissed
-    const showFileMenu = mentionInfo.inMentionMode && !showSlashMenu
-
     let inputPrompt = ""
     if (pendingAsk && !yolo && askType === "options" && askOptions.length > 0) {
         inputPrompt = `(1-${askOptions.length} or type)`
+    }
+
+    composerActionsRef.current = {
+        handleAskShortcuts,
+        handleSubmit,
+        handleExit,
+        clearViewAndResetTask,
+        handleButtonAction,
+        toggleMode,
+        toggleAutoApproveAll,
+        toggleTranscriptVerbosity: () => setIsVerboseTranscript((verbose) => !verbose),
     }
 
     return (
@@ -850,17 +458,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             </Box>
                         )
                     }
-                    if (item.type === "batch") {
-                        return (
-                            <Box key={item.key} paddingX={1} width="100%">
-                                <BatchSummaryCard
-                                    batch={item.batch}
-                                    isExpanded={batchExpanded.has(item.batch.batchId)}
-                                    verbose={verboseBatch}
-                                />
-                            </Box>
-                        )
-                    }
                     const card = item.message.content.type === DiracMessageType.CARD ? item.message.content.card : null
                     return (
                         <Box key={item.key} paddingX={1} width="100%">
@@ -870,13 +467,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 isExpanded={card ? getIsCardExpanded(card) : false}
                                 onCollapse={card ? () => handleCardCollapse(card.id) : undefined}
                                 activeVoiceStreamId={taskState.activeVoiceStreamId}
+                                showReasoning={isVerboseTranscript}
                             />
                         </Box>
                     )
                 }}
             </Static>
 
-            <Box flexDirection="column" width="100%">
+            <Box flexDirection="column" width="100%" maxHeight={Math.max(1, terminalRows - 6)}>
                 {isWelcomeState && (
                     <ChatHeader
                         isWelcomeState={isWelcomeState}
@@ -889,10 +487,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     />
                 )}
 
-                {liveMessages.map((msg) => {
+                {dynamicItems.map((item) => {
+                    if (item.type === "notice") {
+                        return (
+                            <Box key={item.key} paddingX={1}>
+                                <Text color="gray" dimColor>{item.message}</Text>
+                            </Box>
+                        )
+                    }
+                    const msg = item.message
                     const card = msg.content.type === DiracMessageType.CARD ? msg.content.card : null
                     return (
-                        <Box key={msg.id} paddingX={1} width="100%">
+                        <React.Fragment key={item.key}>
                             <ChatMessage
                                 isExecuting={msg.id === respondedToAsk}
                                 isStreaming={msg.id === taskState.activeVoiceStreamId}
@@ -901,8 +507,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 isExpanded={card ? getIsCardExpanded(card) : false}
                                 onCollapse={card ? () => handleCardCollapse(card.id) : undefined}
                                 activeVoiceStreamId={taskState.activeVoiceStreamId}
+                                showReasoning={isVerboseTranscript}
+                                compact={item.isCompact}
+                                maxContentLines={item.maxContentLines}
                             />
-                        </Box>
+                        </React.Fragment>
                     )
                 })}
 
@@ -913,16 +522,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
 
                 {isSpinnerActive && (
-                    <ThinkingIndicator mode={mode} onCancel={handleCancel} startTime={spinnerStartTime} lastAction={(() => {
-                        const msgs = taskState.diracMessages ?? []
-                        for (let i = msgs.length - 1; i >= 0; i--) {
-                            const m = msgs[i]
-                            if (m.content.type === "card" && m.content.card.endTime) {
-                                return m.content.card.header
+                    <ThinkingIndicator
+                        mode={mode}
+                        onCancel={handleCancel}
+                        startTime={spinnerStartTime}
+                        lastAction={(() => {
+                            const msgs = taskState.diracMessages ?? []
+                            for (let i = msgs.length - 1; i >= 0; i--) {
+                                const m = msgs[i]
+                                if (m.content.type === "card" && m.content.card.endTime) {
+                                    return m.content.card.header
+                                }
                             }
-                        }
-                        return undefined
-                    })()} />
+                            return undefined
+                        })()}
+                    />
                 )}
 
                 {uiActionState && !activePanel && !isExiting && (
@@ -1005,17 +619,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 {!showSlashMenu && !showFileMenu && !activePanel && (
                     <ChatFooter
                         autoApproveAll={autoApproveAll}
-                        verboseBatch={verboseBatch}
-                        contextWindowSize={contextWindowSize}
-                        gitBranch={gitBranch}
-                        gitDiffStats={gitDiffStats}
-                        lastApiReqTotalTokens={lastApiReqTotalTokens}
+                        contextWindowSize={footerStatus.contextWindowSize}
+                        gitBranch={footerStatus.gitBranch}
+                        gitDiffStats={footerStatus.gitDiffStats}
+                        lastApiReqTotalTokens={footerStatus.lastApiReqTotalTokens}
                         mode={mode}
-                        modelId={modelId}
-                        provider={provider}
-                        totalCost={metrics.totalCost}
-                        taskStatus={taskState.taskStatus}
-                        workspacePath={workspacePath}
+                        modelId={footerStatus.modelId}
+                        provider={footerStatus.provider}
+                        totalCost={footerStatus.totalCost}
+                        taskStatus={footerStatus.taskStatus}
+                        workspacePath={footerStatus.workspacePath}
                     />
                 )}
             </Box>

@@ -1,6 +1,6 @@
-import { Box, Text } from "ink"
+import { Text } from "ink"
 import { lexer, type Token, type Tokens } from "marked"
-import React from "react"
+import React, { useMemo } from "react"
 import { linkifyPaths } from "../../utils/terminal-link"
 import { styles } from "../../constants/theme"
 
@@ -13,6 +13,8 @@ function renderTokens(tokens: Token[], color?: string): React.ReactNode[] {
 
 /**
  * Render a single marked token (block or inline) as an Ink React node.
+ * All block tokens use plain <Text> with explicit \n instead of <Box>
+ * to avoid layout overflow issues in Ink's dynamic region.
  */
 function renderToken(token: Token, key: number, color?: string): React.ReactNode {
     switch (token.type) {
@@ -22,65 +24,77 @@ function renderToken(token: Token, key: number, color?: string): React.ReactNode
             const { depth, tokens } = token as Tokens.Heading
             const headingStyle = depth <= 2 ? styles.markdown.heading : styles.markdown.headingSub
             return (
-                <Box key={key} marginTop={depth <= 2 ? 1 : 0} marginBottom={depth === 1 ? 1 : 0}>
+                <React.Fragment key={key}>
+                    {depth <= 2 && <Text>{"\n"}</Text>}
                     <Text {...headingStyle} {...(depth > 2 && color ? { color } : {})}>
                         {renderTokens(tokens, color)}
                     </Text>
-                </Box>
+                    <Text>{"\n"}</Text>
+                    {depth === 1 && <Text>{"\n"}</Text>}
+                </React.Fragment>
             )
         }
 
         case "paragraph":
             return (
-                <Text color={color} key={key}>
-                    {renderTokens((token as Tokens.Paragraph).tokens, color)}
-                </Text>
+                <React.Fragment key={key}>
+                    <Text color={color}>{renderTokens((token as Tokens.Paragraph).tokens, color)}</Text>
+                    <Text>{"\n"}</Text>
+                </React.Fragment>
             )
 
-        case "code":
+        case "code": {
+            const maxCodeWidth = (process.stdout.columns || 80) - 9 // indent + border + padding
+            const rawLines = (token as Tokens.Code).text.split("\n")
+            const wrappedLines = rawLines.flatMap((line) => {
+                if (line.length <= maxCodeWidth || maxCodeWidth <= 0) return [line]
+                const chunks: string[] = []
+                for (let i = 0; i < line.length; i += maxCodeWidth) {
+                    chunks.push(line.slice(i, i + maxCodeWidth))
+                }
+                return chunks
+            })
+            const padWidth = Math.max(...wrappedLines.map((l) => l.length), 1)
             return (
-                <Box
-                    borderColor="brightBlack"
-                    borderStyle="single"
-                    flexDirection="column"
-                    key={key}
-                    marginY={0}
-                    paddingX={1}
-                >
-                    {(token as Tokens.Code).text.split("\n").map((line, i) => (
-                        <Text {...styles.markdown.codeBlock} key={i}>
-                            {line || " "}
+                <React.Fragment key={key}>
+                    <Text>{"\n"}</Text>
+                    <Text color="brightBlack">{"┌" + "─".repeat(padWidth + 2) + "┐\n"}</Text>
+                    {wrappedLines.map((line, i) => (
+                        <Text key={i}>
+                            <Text color="brightBlack">{"│ "}</Text>
+                            <Text {...styles.markdown.codeBlock}>{(line || " ").padEnd(padWidth)}</Text>
+                            <Text color="brightBlack">{" │\n"}</Text>
                         </Text>
                     ))}
-                </Box>
+                    <Text color="brightBlack">{"└" + "─".repeat(padWidth + 2) + "┘\n"}</Text>
+                </React.Fragment>
             )
+        }
 
         case "list": {
             const { ordered, start, items } = token as Tokens.List
             return (
-                <Box flexDirection="column" key={key}>
+                <React.Fragment key={key}>
                     {items.map((item, i) => (
-                        <Box flexDirection="row" key={i}>
+                        <Text key={i}>
                             <Text color="gray">{ordered ? `${Number(start ?? 1) + i}. ` : "• "}</Text>
-                            <Box flexDirection="column" flexGrow={1}>
-                                {renderTokens(item.tokens, color)}
-                            </Box>
-                        </Box>
+                            {renderTokens(item.tokens, color)}
+                        </Text>
                     ))}
-                </Box>
+                </React.Fragment>
             )
         }
 
         case "blockquote":
             return (
-                <Box flexDirection="row" key={key}>
-                    <Text {...styles.markdown.blockquoteBar}>│ </Text>
-                    <Box flexDirection="column">{renderTokens((token as Tokens.Blockquote).tokens, color)}</Box>
-                </Box>
+                <React.Fragment key={key}>
+                    <Text {...styles.markdown.blockquoteBar}>{"│ "}</Text>
+                    {renderTokens((token as Tokens.Blockquote).tokens, color)}
+                </React.Fragment>
             )
 
         case "space":
-            return <Text key={key}> </Text>
+            return <Text key={key}>{"\n"}</Text>
 
         // --- Inline tokens ---
 
@@ -132,9 +146,12 @@ function renderToken(token: Token, key: number, color?: string): React.ReactNode
 
         case "hr":
             return (
-                <Text {...styles.markdown.hr} key={key}>
-                    {"─".repeat(process.stdout.columns || 80)}
-                </Text>
+                <React.Fragment key={key}>
+                    <Text {...styles.markdown.hr}>
+                        {"─".repeat(process.stdout.columns || 80)}
+                    </Text>
+                    <Text>{"\n"}</Text>
+                </React.Fragment>
             )
 
         case "table": {
@@ -146,28 +163,40 @@ function renderToken(token: Token, key: number, color?: string): React.ReactNode
             }
             const headerTexts = header.map(getCellText)
             const rowTexts = rows.map((row) => row.map(getCellText))
-            const colWidths = headerTexts.map((h, ci) => {
+            let colWidths = headerTexts.map((h, ci) => {
                 const maxRowWidth = rowTexts.reduce(
                     (max, row) => Math.max(max, (row[ci] || "").length),
                     0,
                 )
                 return Math.max(h.length, maxRowWidth)
             })
+            // Cap table width to fit within terminal to prevent overflow on Static commit
+            const tableIndent = 6 // msg paddingX(1) + card paddingLeft(5)
+            const maxTableWidth = (process.stdout.columns || 80) - tableIndent
+            const borderOverhead = colWidths.length * 3 + 1 // "│" + 2 padding per col + outer borders
+            const availableForContent = maxTableWidth - borderOverhead
+            if (availableForContent > 0) {
+                const totalNatural = colWidths.reduce((s, w) => s + w, 0)
+                if (totalNatural > availableForContent) {
+                    const scale = availableForContent / totalNatural
+                    colWidths = colWidths.map((w) => Math.max(8, Math.floor(w * scale)))
+                }
+            }
             const topBorder = colWidths.map((w) => "─".repeat(w + 2)).join("┬")
             const headerSep = colWidths.map((w) => "─".repeat(w + 2)).join("┼")
             const bottomBorder = colWidths.map((w) => "─".repeat(w + 2)).join("┴")
             const renderRow = (cells: string[]): string =>
                 "│" + cells.map((c, ci) => ` ${c.padEnd(colWidths[ci])} `).join("│") + "│"
             return (
-                <Box flexDirection="column" key={key}>
-                    <Text {...styles.markdown.tableBorder}>{`┌${topBorder}┐`}</Text>
-                    <Text {...styles.markdown.tableHeader}>{renderRow(headerTexts)}</Text>
-                    <Text {...styles.markdown.tableBorder}>{`├${headerSep}┤`}</Text>
+                <React.Fragment key={key}>
+                    <Text {...styles.markdown.tableBorder}>{`┌${topBorder}┐\n`}</Text>
+                    <Text {...styles.markdown.tableHeader}>{`${renderRow(headerTexts)}\n`}</Text>
+                    <Text {...styles.markdown.tableBorder}>{`├${headerSep}┤\n`}</Text>
                     {rowTexts.map((row, ri) => (
-                        <Text key={ri}>{renderRow(row)}</Text>
+                        <Text key={ri}>{`${renderRow(row)}\n`}</Text>
                     ))}
-                    <Text {...styles.markdown.tableBorder}>{`└${bottomBorder}┘`}</Text>
-                </Box>
+                    <Text {...styles.markdown.tableBorder}>{`└${bottomBorder}┘\n`}</Text>
+                </React.Fragment>
             )
         }
 
@@ -202,8 +231,11 @@ function renderToken(token: Token, key: number, color?: string): React.ReactNode
 
 /**
  * Render a markdown string as Ink components for Modular UI.
+ * Uses pure <Text> (no <Box>) to avoid layout overflow issues in Ink's
+ * dynamic rendering region — Box nodes that exceed terminal height cause
+ * infinite scroll because Ink's log-update cannot erase-and-replace them.
  */
 export const Markdown: React.FC<{ children: string; color?: string }> = ({ children, color }) => {
-    const tokens = lexer(children)
-    return <Box flexDirection="column">{renderTokens(tokens, color)}</Box>
+    const tokens = useMemo(() => lexer(children), [children])
+    return <Text>{renderTokens(tokens, color)}</Text>
 }

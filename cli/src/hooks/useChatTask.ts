@@ -16,12 +16,10 @@ interface UseChatTaskProps {
 	taskId?: string
 	initialPrompt?: string
 	initialImages?: string[]
-	storageKey: string
+	resetComposerInput: () => void
 	onExit?: () => void
 	onError?: () => void
 	clearState: () => void
-	setTextInput: (text: string) => void
-	setCursorPos: (pos: number | ((prev: number) => number)) => void
 	setTaskSwitchKey: React.Dispatch<React.SetStateAction<number>>
 }
 
@@ -30,12 +28,10 @@ export function useChatTask({
 	taskId,
 	initialPrompt,
 	initialImages,
-	storageKey,
+	resetComposerInput,
 	onExit,
 	onError,
 	clearState,
-	setTextInput,
-	setCursorPos,
 	setTaskSwitchKey,
 }: UseChatTaskProps) {
 	const { exit: inkExit } = useApp()
@@ -73,12 +69,11 @@ export function useChatTask({
 		process.stdout.write("\x1b[2J\x1b[H")
 		setTaskSwitchKey((k) => k + 1)
 		clearState()
-		setTextInput("")
-		setCursorPos(0)
+		resetComposerInput()
 		if (ctrl) {
 			ctrl.postStateToWebview()
 		}
-	}, [ctrl, clearState, setTextInput, setCursorPos, setTaskSwitchKey])
+	}, [ctrl, clearState, resetComposerInput, setTaskSwitchKey])
 
 	// Load existing task
 	useEffect(() => {

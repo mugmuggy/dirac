@@ -54,8 +54,24 @@ export function useTurnCommit<T>(
 
     wasActiveRef.current = isActive
 
+    const committed = messages.slice(0, watermarkRef.current)
+    const live = messages.slice(watermarkRef.current)
+
+    // Return stable array references to prevent unnecessary re-renders.
+    // .slice() creates a new array every render even when content is identical,
+    // which can cascade into Ink's <Static> recalculating unnecessarily.
+    const committedRef = useRef<T[]>([])
+    const liveRef = useRef<T[]>([])
+
+    if (committed.length !== committedRef.current.length || committed.some((msg, i) => msg !== committedRef.current[i])) {
+        committedRef.current = committed
+    }
+    if (live.length !== liveRef.current.length || live.some((msg, i) => msg !== liveRef.current[i])) {
+        liveRef.current = live
+    }
+
     return {
-        committed: messages.slice(0, watermarkRef.current),
-        live: messages.slice(watermarkRef.current),
+        committed: committedRef.current,
+        live: liveRef.current,
     }
 }

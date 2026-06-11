@@ -42,7 +42,7 @@ Tools are self-contained units dispatched by `ToolExecutorCoordinator`. Once cal
 ## 🛠️ Dev Flow
 - Setup: `npm run install:all`
 - Protobufs: `npm run protos` (Required before build)
-- Compile: `npm run compile`
+- Compile: `npm run compile` for backend, `npm run cli:build` for cli, `npm run build:webview` for webview
 - Test: `npm test` (do not run tests automatically, only if user asked)
 - Lint: `npm run lint`
 

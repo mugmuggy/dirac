@@ -1,5 +1,5 @@
 import { ActionButton } from "@shared/ExtensionMessage"
-import { Box, Text } from "ink"
+import { Text } from "ink"
 import React from "react"
 
 interface CardInteractionsProps {
@@ -16,30 +16,33 @@ export const CardInteractions: React.FC<CardInteractionsProps> = ({
     if (!requireFeedback && (!actions || actions.length === 0)) return null
 
     return (
-        <Box flexDirection="column" marginLeft={1} marginTop={1}>
-
+        <React.Fragment>
             {requireFeedback && (
-                <Box marginBottom={1}>
-                    <Text color="cyan" italic>
-                        {feedbackPlaceholder || "Waiting for feedback..."}
-                    </Text>
-                </Box>
+                <Text color="cyan" italic>
+                    {"   "}
+                    {feedbackPlaceholder || "Waiting for feedback..."}
+                    {"\n"}
+                </Text>
             )}
 
             {actions && actions.length > 0 && (
-                <Box flexDirection="row" gap={1} flexWrap="wrap">
+                <Text>
+                    {"   "}
                     {actions.map((action, idx) => (
-                        <Box key={idx}>
+                        <Text key={idx}>
                             <Text color="gray">[{idx + 1}] </Text>
-                            <Box backgroundColor={action.style === "danger" ? "red" : action.primary ? "cyan" : "green"} paddingX={1}>
-                                <Text color="white" bold>
-                                    {action.label}
-                                </Text>
-                            </Box>
-                        </Box>
+                            <Text
+                                color={action.style === "danger" ? "red" : action.primary ? "cyan" : "green"}
+                                bold
+                            >
+                                {action.label}
+                            </Text>
+                            {idx < actions.length - 1 ? "   " : ""}
+                        </Text>
                     ))}
-                </Box>
+                    {"\n"}
+                </Text>
             )}
-        </Box>
+        </React.Fragment>
     )
 }

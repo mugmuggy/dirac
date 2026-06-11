@@ -1,13 +1,12 @@
 import { useInput } from "ink"
 import { isMouseEscapeSequence, isTerminalResponseSequence } from "../utils/input"
 import { extractMentionQuery, insertMention } from "../utils/file-search"
-import { extractSlashQuery, insertSlashCommand } from "../utils/slash-commands"
+import { executeLocalSlashCommand, extractSlashQuery, insertSlashCommand } from "../utils/slash-commands"
 import { findWordEnd, findWordStart } from "./useTextInput"
 import { moveCursorDown, moveCursorUp } from "../utils/cursor"
 import { parseImagesFromInput } from "../utils/parser"
 import { StateManager } from "@/core/storage/StateManager"
 import { readImageFromClipboard } from "../utils/clipboard-image"
-import { scrollableCardActive } from "../components/modular-ui/scrollable-card-state"
 
 interface UseChatInputHandlerProps {
     textInputRef: React.MutableRefObject<string>
@@ -22,7 +21,6 @@ interface UseChatInputHandlerProps {
     insertTextAtCursor: (text: string) => void
     toggleMode: () => void
     toggleAutoApproveAll: () => void
-    toggleVerbose: () => void
     handleSubmit: (text: string, images: string[]) => void
     handleExit: () => void
     clearViewAndResetTask: () => void
@@ -63,10 +61,8 @@ interface UseChatInputHandlerProps {
     PASTE_UPDATE_DEBOUNCE_MS: number
     // Other
     mode: string
-    toggleCardExpansion: (cardId: string) => void
-    currentCardId?: string
-    toggleBatchExpansion: (batchId: string) => void
-    latestBatchId?: string
+    toggleTranscriptVerbosity: () => void
+    isWelcomeState: boolean
 }
 
 export function useChatInputHandler({
@@ -82,7 +78,6 @@ export function useChatInputHandler({
     insertTextAtCursor,
     toggleMode,
     toggleAutoApproveAll,
-    toggleVerbose,
     handleSubmit,
     handleExit,
     clearViewAndResetTask,
@@ -117,10 +112,8 @@ export function useChatInputHandler({
     PASTE_CHUNK_WINDOW_MS,
     PASTE_UPDATE_DEBOUNCE_MS,
     mode,
-    toggleCardExpansion,
-    currentCardId,
-    toggleBatchExpansion,
-    latestBatchId,
+    toggleTranscriptVerbosity,
+    isWelcomeState,
 }: UseChatInputHandlerProps) {
     useInput((input, key) => {
         if (isMouseEscapeSequence(input) || isTerminalResponseSequence(input, key)) return
@@ -161,71 +154,23 @@ export function useChatInputHandler({
             if (key.tab || key.return) {
                 const cmd = filteredCommands[selectedSlashIndex]
                 if (cmd) {
-                    if (cmd.name === "help") {
-                        setActivePanel({ type: "help" })
-                        setTextInput("")
-                        setCursorPos(0)
+                    const wasLocalCommand = executeLocalSlashCommand(cmd.name, {
+                        mode,
+                        setActivePanel,
+                        resetInputLine: () => {
+                            setTextInput("")
+                            setCursorPos(0)
+                        },
+                        clearViewAndResetTask,
+                        handleExit,
+                    })
+
+                    if (wasLocalCommand) {
                         setSelectedSlashIndex(0)
                         setSlashMenuDismissed(true)
                         return
                     }
-                    if (cmd.name === "settings") {
-                        setActivePanel({ type: "settings" })
-                        setTextInput("")
-                        setCursorPos(0)
-                        setSelectedSlashIndex(0)
-                        setSlashMenuDismissed(true)
-                        return
-                    }
-                    if (cmd.name === "models") {
-                        const apiConfig = StateManager.get().getApiConfiguration()
-                        const provider =
-                            mode === "act"
-                                ? apiConfig.actModeApiProvider || apiConfig.planModeApiProvider
-                                : apiConfig.planModeApiProvider || apiConfig.actModeApiProvider
-                        const initialMode = !provider ? undefined : provider === "dirac" ? "featured-models" : "model-picker"
-                        const initialModelKey = mode === "act" ? "actModelId" : "planModelId"
-                        setActivePanel({ type: "settings", initialMode, initialModelKey })
-                        setTextInput("")
-                        setCursorPos(0)
-                        setSelectedSlashIndex(0)
-                        setSlashMenuDismissed(true)
-                        return
-                    }
-                    if (cmd.name === "history") {
-                        setActivePanel({ type: "history" })
-                        setTextInput("")
-                        setCursorPos(0)
-                        setSelectedSlashIndex(0)
-                        setSlashMenuDismissed(true)
-                        return
-                    }
-                    if (cmd.name === "skills") {
-                        setActivePanel({ type: "skills" })
-                        setTextInput("")
-                        setCursorPos(0)
-                        setSelectedSlashIndex(0)
-                        setSlashMenuDismissed(true)
-                        return
-                    }
-                    if (cmd.name === "clear") {
-                        clearViewAndResetTask()
-                        setSelectedSlashIndex(0)
-                        setSlashMenuDismissed(true)
-                        return
-                    }
-                    if (cmd.name === "exit" || cmd.name === "q") {
-                        handleExit()
-                        return
-                    }
-                    if (cmd.name === "providers") {
-                        setActivePanel({ type: "settings", initialMode: "provider-picker" })
-                        setTextInput("")
-                        setCursorPos(0)
-                        setSelectedSlashIndex(0)
-                        setSlashMenuDismissed(true)
-                        return
-                    }
+
                     const newText = insertSlashCommand(currentTextInput, currentSlashInfo.slashIndex, cmd.name)
                     setTextInput(newText)
                     setCursorPos(newText.length)
@@ -272,7 +217,7 @@ export function useChatInputHandler({
             return
         }
 
-        if (key.upArrow && !inSlashMenu && !inFileMenu && !scrollableCardActive.current) {
+        if (key.upArrow && !inSlashMenu && !inFileMenu && isWelcomeState) {
             const historyItems = getHistoryItems()
             if (historyItems.length > 0) {
                 const canNavigate =
@@ -292,7 +237,7 @@ export function useChatInputHandler({
             }
         }
 
-        if (key.downArrow && !inSlashMenu && !inFileMenu && !scrollableCardActive.current) {
+        if (key.downArrow && !inSlashMenu && !inFileMenu && isWelcomeState) {
             const historyItems = getHistoryItems()
             if (historyIndex >= 0) {
                 const canNavigate = historyIndex < historyItems.length && currentTextInput === historyItems[historyIndex]
@@ -331,17 +276,8 @@ export function useChatInputHandler({
 
         const card = pendingAsk?.content?.type === "card" ? pendingAsk.content.card : null
         if (currentTextInput === "" && !isProcessing) {
-            if (input === "b") {
-                toggleVerbose()
-                return
-            }
-
-            if (input === "v") {
-                if (latestBatchId) {
-                    toggleBatchExpansion(latestBatchId)
-                } else if (currentCardId) {
-                    toggleCardExpansion(currentCardId)
-                }
+            if (!key.ctrl && input === "v") {
+                toggleTranscriptVerbosity()
                 return
             }
 

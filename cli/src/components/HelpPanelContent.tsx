@@ -55,7 +55,6 @@ export const HelpPanelContent: React.FC<HelpPanelContentProps> = ({ onClose }) =
                         ["Alt/Option+←/→", "Move by word"],
                         ["Tab", "Switch Plan/Act mode"],
                         ["Shift+Tab", "Toggle auto-approve"],
-                        ["b", "Toggle verbose batch details"],
                         ["Esc", "Cancel current action"],
                         ["Ctrl+C", "Interrupt / exit"],
                     ].map(([key, desc], i) => (

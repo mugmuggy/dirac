@@ -17,7 +17,6 @@ interface ChatFooterProps {
     gitBranch: string | null
     gitDiffStats: GitDiffStats | null
     autoApproveAll: boolean
-    verboseBatch: boolean
     taskStatus?: TaskStatus
     show?: boolean
 }
@@ -33,7 +32,6 @@ export const ChatFooter: React.FC<ChatFooterProps> = ({
     gitBranch,
     gitDiffStats,
     autoApproveAll,
-    verboseBatch,
     taskStatus,
     show = true,
 }) => {
@@ -44,7 +42,7 @@ export const ChatFooter: React.FC<ChatFooterProps> = ({
             {/* Row 1: Instructions (left, can wrap) | Plan/Act toggle (right, no wrap) */}
             <Box justifyContent="space-between" paddingLeft={1} paddingRight={1} width="100%">
                 <Box flexShrink={1} flexWrap="wrap">
-                    <Text color="gray">/ for commands · @ for files · Shift+↓ newline · Tab switch mode</Text>
+                    <Text color="gray">/ commands · @ files · v details · Shift+↓ newline · Tab mode</Text>
                 </Box>
                 <Box flexShrink={0} gap={1}>
                     <Box>
@@ -110,15 +108,6 @@ export const ChatFooter: React.FC<ChatFooterProps> = ({
                     </Text>
                 ) : (
                     <Text color="gray">Auto-approve all disabled (Shift+Tab)</Text>
-                )}
-                <Text color="gray">·</Text>
-                {verboseBatch ? (
-                    <Text>
-                        <Text color="green">⏵⏵ Verbose batch details on</Text>
-                        <Text color="gray"> (b)</Text>
-                    </Text>
-                ) : (
-                    <Text color="gray">Verbose batch details off (b)</Text>
                 )}
             </Box>
         </Box>
