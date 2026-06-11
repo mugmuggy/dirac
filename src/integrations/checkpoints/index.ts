@@ -22,35 +22,35 @@ import { TaskMessenger } from "../../core/task/TaskMessenger"
 type UpdateTaskHistoryFunction = (historyItem: HistoryItem) => Promise<HistoryItem[]>
 
 interface CheckpointManagerTask {
-	readonly taskId: string
+    readonly taskId: string
 }
 interface CheckpointManagerConfig {
-	readonly enableCheckpoints: boolean
+    readonly enableCheckpoints: boolean
 }
 interface CheckpointManagerServices {
-	readonly fileContextTracker: FileContextTracker
-	readonly diffViewProvider: DiffViewProvider
-	readonly messageStateHandler: MessageStateHandler
-	readonly taskState: TaskState
-	readonly workspaceManager?: WorkspaceRootManager
+    readonly fileContextTracker: FileContextTracker
+    readonly diffViewProvider: DiffViewProvider
+    readonly messageStateHandler: MessageStateHandler
+    readonly taskState: TaskState
+    readonly workspaceManager?: WorkspaceRootManager
 }
 interface CheckpointManagerCallbacks {
-	readonly updateTaskHistory: UpdateTaskHistoryFunction
-	readonly cancelTask: () => Promise<void>
-	readonly taskMessenger: TaskMessenger
-	readonly postStateToWebview: () => Promise<void>
-	readonly resetTransientState: () => Promise<void>
+    readonly updateTaskHistory: UpdateTaskHistoryFunction
+    readonly cancelTask: () => Promise<void>
+    readonly taskMessenger: TaskMessenger
+    readonly postStateToWebview: () => Promise<void>
+    readonly resetTransientState: () => Promise<void>
 }
 interface CheckpointManagerInternalState {
-	conversationHistoryDeletedRange?: [number, number]
-	checkpointTracker?: CheckpointTracker
-	checkpointManagerErrorMessage?: string
-	checkpointTrackerInitPromise?: Promise<CheckpointTracker | undefined>
+    conversationHistoryDeletedRange?: [number, number]
+    checkpointTracker?: CheckpointTracker
+    checkpointManagerErrorMessage?: string
+    checkpointTrackerInitPromise?: Promise<CheckpointTracker | undefined>
 }
 
 interface CheckpointRestoreStateUpdate {
-	conversationHistoryDeletedRange?: [number, number]
-	checkpointManagerErrorMessage?: string
+    conversationHistoryDeletedRange?: [number, number]
+    checkpointManagerErrorMessage?: string
 }
 
 /**
@@ -75,834 +75,840 @@ interface CheckpointRestoreStateUpdate {
  * For checkpoint operations, the CheckpointTracker class is used to interact with the underlying git logic.
  */
 export class TaskCheckpointManager implements ICheckpointManager {
-	private readonly task: CheckpointManagerTask
-	private readonly config: CheckpointManagerConfig
-	private readonly services: CheckpointManagerServices
-	private readonly callbacks: CheckpointManagerCallbacks
-	private readonly taskState: TaskState
-
-	private state: CheckpointManagerInternalState
-
-	constructor(
-		task: CheckpointManagerTask,
-		config: CheckpointManagerConfig,
-		services: CheckpointManagerServices,
-		callbacks: CheckpointManagerCallbacks,
-		initialState: CheckpointManagerInternalState,
-	) {
-		this.task = Object.freeze(task)
-		this.config = config
-		this.services = services
-		this.callbacks = Object.freeze(callbacks)
-		this.taskState = services.taskState
-		this.state = { ...initialState }
-	}
-
-	/**
-	 * Creates a checkpoint of the current workspace state
-	 * @param isAttemptCompletionMessage - Whether this checkpoint is for an attempt completion message
-	 * @param completionMessageId - Optional ID of the completion message to update with checkpoint hash
-	 */
-	async saveCheckpoint(isAttemptCompletionMessage = false, completionMessageId?: string): Promise<void> {
-		try {
-			// If checkpoints are disabled or previously encountered a timeout error, return early
-			if (
-				!this.config.enableCheckpoints ||
-				this.state.checkpointManagerErrorMessage?.includes("Checkpoints initialization timed out.")
-			) {
-				return
-			}
-
-			// Set isCheckpointCheckedOut to false for all messages with checkpoint hashes
-			const diracMessages = this.services.messageStateHandler.getDiracMessages()
-			diracMessages.forEach((message) => {
-				if (message.lastCheckpointHash) {
-					message.isCheckpointCheckedOut = false
-				}
-			})
-
-			// Prevent repetitive checkpointTracker initialization errors on non-attempt completion messages
-			if (!this.state.checkpointTracker && !isAttemptCompletionMessage && !this.state.checkpointManagerErrorMessage) {
-				await this.checkpointTrackerCheckAndInit()
-			}
-			// attempt completion messages give it one last chance. Skip if there was a previous checkpoints initialization timeout error.
-			else if (
-				!this.state.checkpointTracker &&
-				isAttemptCompletionMessage &&
-				!this.state.checkpointManagerErrorMessage?.includes("Checkpoints initialization timed out.")
-			) {
-				await this.checkpointTrackerCheckAndInit()
-			}
-
-			// Critical failure to initialize checkpoint tracker, return early
-			if (!this.state.checkpointTracker) {
-				Logger.error(
-					`[TaskCheckpointManager] Failed to save checkpoint for task ${this.task.taskId}: Checkpoint tracker not available`
-				)
-				return
-			}
-
-			// Non attempt-completion messages: create a visible CHECKPOINT message
-			if (!isAttemptCompletionMessage) {
-				// Ensure we aren't creating back-to-back checkpoint_created messages
-				const lastMessage = diracMessages.at(-1)
-				if (lastMessage?.content.type === "checkpoint") {
-					return
-				}
-
-				// Create a new checkpoint message and asynchronously add the commitHash
-				const cardHandle = await this.callbacks.taskMessenger.createCheckpoint()
-
-				const targetMessage = this.services.messageStateHandler.getDiracMessages().find((m) => m.id === cardHandle.id)
-
-				if (targetMessage) {
-					// Optimization: Background commit
-					this.state.checkpointTracker
-						?.commit()
-						.then(async (commitHash) => {
-							if (commitHash) {
-								targetMessage.lastCheckpointHash = commitHash
-								await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
-							}
-						})
-						.catch((error) => {
-							Logger.error(
-								`[TaskCheckpointManager] Failed to create checkpoint commit for task ${this.task.taskId}:`,
-								error,
-							)
-						})
-				}
-			} else {
-				// attempt_completion messages are special
-				// First check last 3 messages to see if we already have a recent completion checkpoint
-				// If we do, skip creating a duplicate checkpoint
-				const lastFivediracMessages = this.services.messageStateHandler.getDiracMessages().slice(-3)
-				const lastCompletionResultMessage = findLast(
-					lastFivediracMessages,
-					(m) => m.content.type === "card" && m.content.card.header === "Completion Result"
-				)
-				if (lastCompletionResultMessage?.lastCheckpointHash) {
-					Logger.log("Completion checkpoint already exists, skipping duplicate checkpoint creation")
-					return
-				}
-
-				// For attempt_completion, commit then update the completion_result message with the checkpoint hash
-				if (this.state.checkpointTracker) {
-					const commitHash = await this.state.checkpointTracker.commit()
-
-					// If a completionMessageId is provided, update that specific message with the checkpoint hash
-					if (completionMessageId) {
-						const targetMessage = this.services.messageStateHandler
-							.getDiracMessages()
-							.find((m) => m.id === completionMessageId)
-						if (targetMessage) {
-							targetMessage.lastCheckpointHash = commitHash
-							await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
-						}
-					} else {
-						// Fallback to findLast if no ID provided - update the last completion_result message
-						if (lastCompletionResultMessage) {
-							lastCompletionResultMessage.lastCheckpointHash = commitHash
-							await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
-						}
-					}
-				} else {
-					Logger.error(
-						`[TaskCheckpointManager] Checkpoint tracker does not exist and could not be initialized for attempt completion for task ${this.task.taskId}`
-					)
-				}
-			}
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error"
-			Logger.error(`[TaskCheckpointManager] Failed to save checkpoint for task ${this.task.taskId}:`, errorMessage)
-		}
-	}
-
-
-	/**
-	 * Restores a checkpoint by message ID
-	 * @param messageId - ID of the message to restore to
-	 * @param restoreType - Type of restoration (task, workspace, or both)
-	 * @param offset - Optional offset for the message index
-	 * @returns checkpointManagerStateUpdate with any state changes that need to be applied
-	 */
-	async restoreCheckpoint(
-		messageId: string,
-		restoreType: DiracCheckpointRestore,
-		offset?: number
-	): Promise<CheckpointRestoreStateUpdate> {
-		try {
-			const diracMessages = this.services.messageStateHandler.getDiracMessages()
-			const messageIndex = diracMessages.findIndex((m) => m.id === messageId) - (offset || 0)
-			// Find the last message before messageIndex that has a lastCheckpointHash
-			const lastHashIndex = findLastIndex(diracMessages.slice(0, messageIndex), (m) => m.lastCheckpointHash !== undefined)
-			const message = diracMessages[messageIndex]
-			const lastMessageWithHash = diracMessages[lastHashIndex]
-
-			if (!message) {
-				Logger.error(`[TaskCheckpointManager] Message not found for id ${messageId} in task ${this.task.taskId}`)
-				return {}
-			}
-
-			let didWorkspaceRestoreFail = false
-
-			switch (restoreType) {
-				case "task":
-					break
-				case "taskAndWorkspace":
-				case "workspace":
-					if (!this.config.enableCheckpoints) {
-						const errorMessage = "Checkpoints are disabled in settings."
-						Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
-						HostProvider.window.showMessage({
-							type: ShowMessageType.ERROR,
-							message: errorMessage,
-						})
-						didWorkspaceRestoreFail = true
-						break
-					}
-
-					if (!this.state.checkpointTracker && !this.state.checkpointManagerErrorMessage) {
-						try {
-							const workspacePath = await this.getWorkspacePath()
-							this.state.checkpointTracker = await CheckpointTracker.create(
-								this.task.taskId,
-								this.config.enableCheckpoints,
-								workspacePath
-							)
-							this.services.messageStateHandler.setCheckpointTracker(this.state.checkpointTracker)
-						} catch (error) {
-							const errorMessage = error instanceof Error ? error.message : "Unknown error"
-							Logger.error(
-								`[TaskCheckpointManager] Failed to initialize checkpoint tracker for task ${this.task.taskId}:`,
-								errorMessage
-							)
-							this.state.checkpointManagerErrorMessage = errorMessage
-							HostProvider.window.showMessage({
-								type: ShowMessageType.ERROR,
-								message: errorMessage,
-							})
-							didWorkspaceRestoreFail = true
-						}
-					}
-
-					if (message.lastCheckpointHash && this.state.checkpointTracker) {
-						try {
-							await this.state.checkpointTracker.resetHead(message.lastCheckpointHash)
-						} catch (error) {
-							const errorMessage = error instanceof Error ? error.message : "Unknown error"
-							Logger.error(
-								`[TaskCheckpointManager] Failed to restore checkpoint for task ${this.task.taskId}:`,
-								errorMessage
-							)
-							HostProvider.window.showMessage({
-								type: ShowMessageType.ERROR,
-								message: "Failed to restore checkpoint: " + errorMessage,
-							})
-							didWorkspaceRestoreFail = true
-						}
-					} else if (offset && lastMessageWithHash.lastCheckpointHash && this.state.checkpointTracker) {
-						try {
-							await this.state.checkpointTracker.resetHead(lastMessageWithHash.lastCheckpointHash)
-						} catch (error) {
-							const errorMessage = error instanceof Error ? error.message : "Unknown error"
-							Logger.error(
-								`[TaskCheckpointManager] Failed to restore offset checkpoint for task ${this.task.taskId}:`,
-								errorMessage
-							)
-							HostProvider.window.showMessage({
-								type: ShowMessageType.ERROR,
-								message: "Failed to restore offset checkpoint: " + errorMessage,
-							})
-							didWorkspaceRestoreFail = true
-						}
-					} else if (!offset && lastMessageWithHash.lastCheckpointHash && this.state.checkpointTracker) {
-						// Fallback: restore to most recent checkpoint when target message has no checkpoint hash
-						Logger.warn(
-							`[TaskCheckpointManager] Message ${messageId} has no checkpoint hash, falling back to previous checkpoint for task ${this.task.taskId}`
-						)
-						try {
-							await this.state.checkpointTracker.resetHead(lastMessageWithHash.lastCheckpointHash)
-						} catch (error) {
-							const errorMessage = error instanceof Error ? error.message : "Unknown error"
-							Logger.error(
-								`[TaskCheckpointManager] Failed to restore fallback checkpoint for task ${this.task.taskId}:`,
-								errorMessage
-							)
-							HostProvider.window.showMessage({
-								type: ShowMessageType.ERROR,
-								message: "Failed to restore checkpoint: " + errorMessage,
-							})
-							didWorkspaceRestoreFail = true
-						}
-					} else {
-						const errorMessage = "Failed to restore checkpoint: No valid checkpoint hash found"
-						Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
-						HostProvider.window.showMessage({
-							type: ShowMessageType.ERROR,
-							message: errorMessage,
-						})
-						didWorkspaceRestoreFail = true
-					}
-					break
-			}
-
-			const checkpointManagerStateUpdate: CheckpointRestoreStateUpdate = {}
-
-			if (!didWorkspaceRestoreFail) {
-				await this.handleSuccessfulRestore(restoreType, message, messageIndex, messageId)
-
-				// Collect state updates
-				if (this.state.conversationHistoryDeletedRange !== undefined) {
-					checkpointManagerStateUpdate.conversationHistoryDeletedRange = this.state.conversationHistoryDeletedRange
-				}
-			} else {
-				sendRelinquishControlEvent()
-
-				if (this.state.checkpointManagerErrorMessage !== undefined) {
-					checkpointManagerStateUpdate.checkpointManagerErrorMessage = this.state.checkpointManagerErrorMessage
-				}
-			}
-
-			return checkpointManagerStateUpdate
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error"
-			Logger.error(`[TaskCheckpointManager] Failed to restore checkpoint for task ${this.task.taskId}:`, errorMessage)
-			sendRelinquishControlEvent()
-			return {
-				checkpointManagerErrorMessage: errorMessage,
-			}
-		}
-	}
-
-
-	/**
-	 * Presents a multi-file diff view between checkpoints
-	 * @param messageId - ID of the message to show diff for
-	 * @param seeNewChangesSinceLastTaskCompletion - Whether to show changes since last completion
-	 */
-	async presentMultifileDiff(messageId: string, seeNewChangesSinceLastTaskCompletion: boolean): Promise<void> {
-		const relinquishButton = () => {
-			sendRelinquishControlEvent()
-		}
-
-		try {
-			if (!this.config.enableCheckpoints) {
-				const errorMessage = "Checkpoints are disabled in settings. Cannot show diff."
-				Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
-				HostProvider.window.showMessage({
-					type: ShowMessageType.INFORMATION,
-					message: errorMessage,
-				})
-				relinquishButton()
-				return
-			}
-
-			Logger.log(`[TaskCheckpointManager] presentMultifileDiff for task ${this.task.taskId}, messageId: ${messageId}`)
-			const diracMessages = this.services.messageStateHandler.getDiracMessages()
-			const messageIndex = diracMessages.findIndex((m) => m.id === messageId)
-			const message = diracMessages[messageIndex]
-			if (!message) {
-				Logger.error(`[TaskCheckpointManager] Message not found for id ${messageId} in task ${this.task.taskId}`)
-				relinquishButton()
-				return
-			}
-			const hash = message.lastCheckpointHash
-			if (!hash) {
-				Logger.error(
-					`[TaskCheckpointManager] No checkpoint hash found for message ${messageId} in task ${this.task.taskId}`
-				)
-				relinquishButton()
-				return
-			}
-
-			// Initialize checkpoint tracker if needed
-			if (!this.state.checkpointTracker && this.config.enableCheckpoints && !this.state.checkpointManagerErrorMessage) {
-				try {
-					const workspacePath = await this.getWorkspacePath()
-					this.state.checkpointTracker = await CheckpointTracker.create(
-						this.task.taskId,
-						this.config.enableCheckpoints,
-						workspacePath
-					)
-					this.services.messageStateHandler.setCheckpointTracker(this.state.checkpointTracker)
-				} catch (error) {
-					const errorMessage = error instanceof Error ? error.message : "Unknown error"
-					Logger.error(
-						`[TaskCheckpointManager] Failed to initialize checkpoint tracker for task ${this.task.taskId}:`,
-						errorMessage
-					)
-					this.state.checkpointManagerErrorMessage = errorMessage
-					HostProvider.window.showMessage({
-						type: ShowMessageType.ERROR,
-						message: errorMessage,
-					})
-					relinquishButton()
-					return
-				}
-			}
-
-			if (!this.state.checkpointTracker) {
-				Logger.error(`[TaskCheckpointManager] Checkpoint tracker not available for task ${this.task.taskId}`)
-				HostProvider.window.showMessage({
-					type: ShowMessageType.ERROR,
-					message: "Checkpoint tracker not available",
-				})
-				relinquishButton()
-				return
-			}
-
-			let changedFiles:
-				| {
-						relativePath: string
-						absolutePath: string
-						before: string
-						after: string
-				  }[]
-				| undefined
-
-			if (seeNewChangesSinceLastTaskCompletion) {
-				// Get last task completed
-				const lastTaskCompletedMessageCheckpointHash = findLast(
-					this.services.messageStateHandler.getDiracMessages().slice(0, messageIndex),
-					(m) => m.content.type === "card" && m.content.card.header === "Completion Result"
-				)?.lastCheckpointHash
-
-				// This value *should* always exist
-				const firstCheckpointMessageCheckpointHash = this.services.messageStateHandler
-					.getDiracMessages()
-					.find((m) => m.content.type === "checkpoint")?.lastCheckpointHash
-
-				const previousCheckpointHash = lastTaskCompletedMessageCheckpointHash || firstCheckpointMessageCheckpointHash
-
-				if (!previousCheckpointHash) {
-					const errorMessage = "Unexpected error: No checkpoint hash found"
-					Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
-					HostProvider.window.showMessage({
-						type: ShowMessageType.ERROR,
-						message: errorMessage,
-					})
-					relinquishButton()
-					return
-				}
-
-				// Get changed files between current state and commit
-				changedFiles = await this.state.checkpointTracker.getDiffSet(previousCheckpointHash, hash)
-				if (!changedFiles?.length) {
-					HostProvider.window.showMessage({
-						type: ShowMessageType.INFORMATION,
-						message: "No changes found",
-					})
-					relinquishButton()
-					return
-				}
-			} else {
-				// Get changed files between current state and commit
-				changedFiles = await this.state.checkpointTracker.getDiffSet(hash)
-				if (!changedFiles?.length) {
-					HostProvider.window.showMessage({
-						type: ShowMessageType.INFORMATION,
-						message: "No changes found",
-					})
-					relinquishButton()
-					return
-				}
-			}
-
-			// Open multi-diff editor
-			const title = seeNewChangesSinceLastTaskCompletion ? "New changes" : "Changes since snapshot"
-			const diffs = changedFiles.map((file) => ({
-				filePath: file.absolutePath,
-				leftContent: file.before,
-				rightContent: file.after,
-			}))
-			await HostProvider.diff.openMultiFileDiff({ title, diffs })
-
-			relinquishButton()
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error"
-			Logger.error(`[TaskCheckpointManager] Failed to present multifile diff for task ${this.task.taskId}:`, errorMessage)
-			HostProvider.window.showMessage({
-				type: ShowMessageType.ERROR,
-				message: "Failed to retrieve diff set: " + errorMessage,
-			})
-			relinquishButton()
-		}
-	}
-
-
-	/**
-	 * Creates a checkpoint commit in the underlying tracker
-	 * @returns Promise<string | undefined> The created commit hash, or undefined if failed
-	 */
-	async commit(): Promise<string | undefined> {
-		try {
-			if (!this.config.enableCheckpoints) {
-				return undefined
-			}
-
-			if (!this.state.checkpointTracker) {
-				await this.checkpointTrackerCheckAndInit()
-			}
-
-			if (!this.state.checkpointTracker) {
-				Logger.error(`[TaskCheckpointManager] Checkpoint tracker not available for commit in task ${this.task.taskId}`)
-				return undefined
-			}
-
-			return await this.state.checkpointTracker.commit()
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error"
-			Logger.error(`[TaskCheckpointManager] Failed to create checkpoint commit for task ${this.task.taskId}:`, errorMessage)
-			return undefined
-		}
-	}
-
-	/**
-	 * Checks if the latest task completion has new changes
-	 * @returns Promise<boolean> - True if there are new changes since last completion
-	 */
-	async doesLatestTaskCompletionHaveNewChanges(): Promise<boolean> {
-		try {
-			if (!this.config.enableCheckpoints) {
-				return false
-			}
-
-			const diracMessages = this.services.messageStateHandler.getDiracMessages()
-			const messageIndex = findLastIndex(
-				diracMessages,
-				(m) => m.content.type === "card" && m.content.card.header === "Completion Result"
-			)
-			const message = diracMessages[messageIndex]
-			if (!message) {
-				Logger.error(`[TaskCheckpointManager] Completion message not found for task ${this.task.taskId}`)
-				return false
-			}
-			const hash = message.lastCheckpointHash
-			if (!hash) {
-				Logger.error(`[TaskCheckpointManager] No checkpoint hash found for completion message in task ${this.task.taskId}`)
-				return false
-			}
-
-			if (this.config.enableCheckpoints && !this.state.checkpointTracker && !this.state.checkpointManagerErrorMessage) {
-				try {
-					const workspacePath = await this.getWorkspacePath()
-					this.state.checkpointTracker = await CheckpointTracker.create(
-						this.task.taskId,
-						this.config.enableCheckpoints,
-						workspacePath
-					)
-					this.services.messageStateHandler.setCheckpointTracker(this.state.checkpointTracker)
-				} catch (error) {
-					const errorMessage = error instanceof Error ? error.message : "Unknown error"
-					Logger.error(
-						`[TaskCheckpointManager] Failed to initialize checkpoint tracker for task ${this.task.taskId}:`,
-						errorMessage
-					)
-					await this.setcheckpointManagerErrorMessage(errorMessage)
-					return false
-				}
-			}
-
-			if (!this.state.checkpointTracker) {
-				Logger.error(`[TaskCheckpointManager] Checkpoint tracker not available for task ${this.task.taskId}`)
-				return false
-			}
-
-			// Get last task completed
-			const lastTaskCompletedMessage = findLast(
-				this.services.messageStateHandler.getDiracMessages().slice(0, messageIndex),
-				(m) => m.content.type === "card" && m.content.card.header === "Completion Result"
-			)
-
-			// Get last task completed
-			const lastTaskCompletedMessageCheckpointHash = lastTaskCompletedMessage?.lastCheckpointHash
-
-			// This value *should* always exist
-			const firstCheckpointMessageCheckpointHash = this.services.messageStateHandler
-				.getDiracMessages()
-				.find((m) => m.content.type === "checkpoint")?.lastCheckpointHash
-
-			const previousCheckpointHash = lastTaskCompletedMessageCheckpointHash || firstCheckpointMessageCheckpointHash
-
-			if (!previousCheckpointHash) {
-				Logger.error(`[TaskCheckpointManager] No previous checkpoint hash found for task ${this.task.taskId}`)
-				return false
-			}
-
-			// Get count of changed files between current state and commit
-			const changedFilesCount = (await this.state.checkpointTracker.getDiffCount(previousCheckpointHash, hash)) || 0
-			return changedFilesCount > 0
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error"
-			Logger.error(`[TaskCheckpointManager] Failed to check for new changes in task ${this.task.taskId}:`, errorMessage)
-			return false
-		}
-	}
-
-
-	/**
-	 * Handles the successful restoration logic for different restore types
-	 */
-	private async handleSuccessfulRestore(
-		restoreType: DiracCheckpointRestore,
-		message: DiracMessage,
-		messageIndex: number,
-		messageId: string
-	): Promise<void> {
-		switch (restoreType) {
-			case "task":
-			case "taskAndWorkspace":
-				// Update conversation history deleted range in our state
-				this.state.conversationHistoryDeletedRange = message.conversationHistoryDeletedRange
-				this.taskState.conversationHistoryDeletedRange = message.conversationHistoryDeletedRange
-
-				const apiConversationHistory = this.services.messageStateHandler.getApiConversationHistory()
-				const newConversationHistory = apiConversationHistory.slice(0, (message.conversationHistoryIndex || 0) + 2) // +1 since this index corresponds to the last user message, and another +1 since slice end index is exclusive
-				await this.services.messageStateHandler.overwriteApiConversationHistory(newConversationHistory)
-
-				// aggregate deleted api reqs info so we don't lose costs/tokens
-				const diracMessages = this.services.messageStateHandler.getDiracMessages()
-				const deletedMessages = diracMessages.slice(messageIndex + 1)
-				const deletedApiReqsMetrics = getApiMetrics(combineCardSequences(deletedMessages))
-
-				// Detect files edited after this message timestamp for file context warning
-				// Only needed for task-only restores when a user edits a message or restores the task context, but not the files.
-				if (restoreType === "task") {
-					const filesEditedAfterMessage = await this.services.fileContextTracker.detectFilesEditedAfterMessage(
-						message.ts,
-						deletedMessages
-					)
-					if (filesEditedAfterMessage.length > 0) {
-						await this.services.fileContextTracker.storePendingFileContextWarning(filesEditedAfterMessage)
-					}
-				}
-
-				const newDiracMessages = diracMessages.slice(0, messageIndex + 1)
-				await this.services.messageStateHandler.overwriteDiracMessages(newDiracMessages) // calls saveDiracMessages which saves historyItem
-
-				await this.callbacks.taskMessenger.upsertApiStatus({
-					tokensIn: deletedApiReqsMetrics.totalTokensIn,
-					tokensOut: deletedApiReqsMetrics.totalTokensOut,
-					cacheWrites: deletedApiReqsMetrics.totalCacheWrites,
-					cacheReads: deletedApiReqsMetrics.totalCacheReads,
-					cost: deletedApiReqsMetrics.totalCost,
-				})
-				break
-			case "workspace":
-				break
-		}
-
-		switch (restoreType) {
-			case "task":
-				HostProvider.window.showMessage({
-					type: ShowMessageType.INFORMATION,
-					message: "Task messages have been restored to the checkpoint",
-				})
-				break
-			case "workspace":
-				HostProvider.window.showMessage({
-					type: ShowMessageType.INFORMATION,
-					message: "Workspace files have been restored to the checkpoint",
-				})
-				break
-			case "taskAndWorkspace":
-				HostProvider.window.showMessage({
-					type: ShowMessageType.INFORMATION,
-					message: "Task and workspace have been restored to the checkpoint",
-				})
-				break
-		}
-
-		if (restoreType !== "task") {
-			// Set isCheckpointCheckedOut flag on the message
-			// Find all messages with checkpoint hashes
-			const checkpointMessages = this.services.messageStateHandler
-				.getDiracMessages()
-				.filter((m) => m.lastCheckpointHash)
-			const currentMessageIndex = checkpointMessages.findIndex((m) => m.id === messageId)
-
-			// Set isCheckpointCheckedOut to false for all checkpoint messages
-			checkpointMessages.forEach((m, i) => {
-				m.isCheckpointCheckedOut = i === currentMessageIndex
-			})
-		}
-
-		await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
-
-		// Cancel and reinitialize the task to get updated messages
-		await this.callbacks.cancelTask()
-		// Reset transient state after successful restore
-		await this.callbacks.resetTransientState()
-
-	}
-
-
-	// ============================================================================
-	// State management - interfaces for updating internal state
-	// ============================================================================
-
-	/**
-	 * Checks for an active checkpoint tracker instance, creates if needed
-	 * Uses promise-based synchronization to prevent race conditions when called concurrently
-	 */
-	async checkpointTrackerCheckAndInit(): Promise<CheckpointTracker | undefined> {
-		// If tracker already exists or there was an error, return immediately
-		if (this.state.checkpointTracker) {
-			return this.state.checkpointTracker
-		}
-
-		// If initialization is already in progress, wait for it to complete
-		if (this.state.checkpointTrackerInitPromise) {
-			return await this.state.checkpointTrackerInitPromise
-		}
-
-		// Start initialization and store the promise to prevent concurrent attempts
-		this.state.checkpointTrackerInitPromise = this.initializeCheckpointTracker()
-
-		try {
-			const tracker = await this.state.checkpointTrackerInitPromise
-			return tracker
-		} finally {
-			// Clear the promise once initialization is complete (success or failure)
-			this.state.checkpointTrackerInitPromise = undefined
-		}
-	}
-
-	/**
-	 * Internal method to actually create the checkpoint tracker
-	 */
-	private async initializeCheckpointTracker(): Promise<CheckpointTracker | undefined> {
-		// Warning Timer - If checkpoints take a while to initialize, show a warning message
-		let checkpointsWarningTimer: NodeJS.Timeout | null = null
-		let checkpointsWarningShown = false
-
-		try {
-			checkpointsWarningTimer = setTimeout(async () => {
-				if (!checkpointsWarningShown) {
-					checkpointsWarningShown = true
-					await this.setcheckpointManagerErrorMessage(
-						"Checkpoints are taking longer than expected to initialize. Working in a large repository? Consider re-opening Dirac in a project that uses git, or disabling checkpoints.",
-					)
-				}
-			}, 7_000)
-
-			// Timeout - If checkpoints take too long to initialize, warn user and disable checkpoints for the task
-			const workspacePath = await this.getWorkspacePath()
-			const tracker = await pTimeout(
-				CheckpointTracker.create(this.task.taskId, this.config.enableCheckpoints, workspacePath),
-				{
-					milliseconds: 15_000,
-					message:
-						"Checkpoints taking too long to initialize. Consider re-opening Dirac in a project that uses git, or disabling checkpoints.",
-				},
-			)
-
-			// Update the state with the created tracker
-			this.state.checkpointTracker = tracker
-			return tracker
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error"
-			Logger.error("Failed to initialize checkpoint tracker:", errorMessage)
-
-			// If the error was a timeout, we disable all checkpoint operations for the rest of the task
-			if (errorMessage.includes("Checkpoints taking too long to initialize")) {
-				await this.setcheckpointManagerErrorMessage(
-					"Checkpoints initialization timed out. Consider re-opening Dirac in a project that uses git, or disabling checkpoints.",
-				)
-			} else {
-				await this.setcheckpointManagerErrorMessage(errorMessage)
-			}
-			return undefined
-		} finally {
-			// Always clean up the timer to prevent memory leaks
-			if (checkpointsWarningTimer) {
-				clearTimeout(checkpointsWarningTimer)
-				checkpointsWarningTimer = null
-			}
-		}
-	}
-
-	/**
-	 * Updates the checkpoint tracker instance
-	 */
-	setCheckpointTracker(checkpointTracker: CheckpointTracker | undefined): void {
-		this.state.checkpointTracker = checkpointTracker
-	}
-
-	/**
-	 * Updates the checkpoint tracker error message and posts to webview
-	 */
-	async setcheckpointManagerErrorMessage(errorMessage: string | undefined): Promise<void> {
-		this.state.checkpointManagerErrorMessage = errorMessage
-		this.taskState.checkpointManagerErrorMessage = errorMessage
-		// Post state to webview so users can see the error message immediately
-		try {
-			await this.callbacks.postStateToWebview()
-		} catch (error) {
-			Logger.error("Failed to post state to webview after checkpoint error:", error)
-		}
-		// TODO - Future telemetry event capture here
-	}
-
-	/**
-	 * Updates the conversation history deleted range
-	 */
-	updateConversationHistoryDeletedRange(range: [number, number] | undefined): void {
-		this.state.conversationHistoryDeletedRange = range
-		// TODO - Future telemetry event capture here
-	}
-
-	// ============================================================================
-	// Internal utilities - Private helpers for checkpoint operations
-	// ============================================================================
-
-	/**
-	 * Gets the workspace path from WorkspaceRootManager when available, otherwise falls back to CheckpointUtils
-	 * @returns Promise<string> The workspace path to use for checkpoint operations
-	 */
-	private async getWorkspacePath(): Promise<string> {
-		// Try to use the centralized WorkspaceRootManager first
-		if (this.services.workspaceManager) {
-			try {
-				const primaryRoot = this.services.workspaceManager.getPrimaryRoot()
-				if (primaryRoot) {
-					return primaryRoot.path
-				}
-				Logger.warn(`[TaskCheckpointManager] WorkspaceRootManager returned no primary root for task ${this.task.taskId}`)
-			} catch (error) {
-				Logger.warn(
-					`[TaskCheckpointManager] Failed to get workspace path from WorkspaceRootManager for task ${this.task.taskId}:`,
-					error,
-				)
-			}
-		}
-
-		// Fallback to the legacy CheckpointUtils implementation
-		const { getWorkingDirectory: getWorkingDirectoryImpl } = await import("./CheckpointUtils")
-		return getWorkingDirectoryImpl()
-	}
-
-	/**
-	 * Provides read-only access to current state for internal operations
-	 */
-	//private get currentState(): Readonly<CheckpointManagerInternalState> {
-	//	return Object.freeze({ ...this.state })
-	//}
-
-	/**
-	 * Provides public read-only access to current state
-	 */
-	public getCurrentState(): Readonly<CheckpointManagerInternalState> {
-		return Object.freeze({ ...this.state })
-	}
-
-	/**
-	 * Provides read-only access to dependencies for internal operations
-	 */
-	//private get deps(): Readonly<CheckpointManagerDependencies> {
-	//	return this.dependencies
-	//}
+    private readonly task: CheckpointManagerTask
+    private readonly config: CheckpointManagerConfig
+    private readonly services: CheckpointManagerServices
+    private readonly callbacks: CheckpointManagerCallbacks
+    private readonly taskState: TaskState
+
+    private state: CheckpointManagerInternalState
+
+    constructor(
+        task: CheckpointManagerTask,
+        config: CheckpointManagerConfig,
+        services: CheckpointManagerServices,
+        callbacks: CheckpointManagerCallbacks,
+        initialState: CheckpointManagerInternalState,
+    ) {
+        this.task = Object.freeze(task)
+        this.config = config
+        this.services = services
+        this.callbacks = Object.freeze(callbacks)
+        this.taskState = services.taskState
+        this.state = { ...initialState }
+    }
+
+    /**
+     * Creates a checkpoint of the current workspace state
+     * @param isAttemptCompletionMessage - Whether this checkpoint is for an attempt completion message
+     * @param completionMessageId - Optional ID of the completion message to update with checkpoint hash
+     */
+    async saveCheckpoint(isAttemptCompletionMessage = false, completionMessageId?: string): Promise<void> {
+        try {
+            // If checkpoints are disabled or previously encountered a timeout error, return early
+            if (
+                !this.config.enableCheckpoints ||
+                this.state.checkpointManagerErrorMessage?.includes("Checkpoints initialization timed out.")
+            ) {
+                return
+            }
+
+            // Set isCheckpointCheckedOut to false for all messages with checkpoint hashes
+            const diracMessages = this.services.messageStateHandler.getDiracMessages()
+            diracMessages.forEach((message) => {
+                if (message.lastCheckpointHash) {
+                    message.isCheckpointCheckedOut = false
+                }
+            })
+
+            // Prevent repetitive checkpointTracker initialization errors on non-attempt completion messages
+            if (!this.state.checkpointTracker && !isAttemptCompletionMessage && !this.state.checkpointManagerErrorMessage) {
+                await this.checkpointTrackerCheckAndInit()
+            }
+            // attempt completion messages give it one last chance. Skip if there was a previous checkpoints initialization timeout error.
+            else if (
+                !this.state.checkpointTracker &&
+                isAttemptCompletionMessage &&
+                !this.state.checkpointManagerErrorMessage?.includes("Checkpoints initialization timed out.")
+            ) {
+                await this.checkpointTrackerCheckAndInit()
+            }
+
+            // Critical failure to initialize checkpoint tracker, return early
+            if (!this.state.checkpointTracker) {
+                Logger.error(
+                    `[TaskCheckpointManager] Failed to save checkpoint for task ${this.task.taskId}: Checkpoint tracker not available`
+                )
+                return
+            }
+
+            // Non attempt-completion messages: create a visible CHECKPOINT message
+            if (!isAttemptCompletionMessage) {
+                // Ensure we aren't creating back-to-back checkpoint_created messages
+                const lastMessage = diracMessages.at(-1)
+                if (lastMessage?.content.type === "checkpoint") {
+                    return
+                }
+
+                // Create a new checkpoint message and asynchronously add the commitHash
+                const cardHandle = await this.callbacks.taskMessenger.createCheckpoint()
+
+                const targetMessage = this.services.messageStateHandler.getDiracMessages().find((m) => m.id === cardHandle.id)
+
+                if (targetMessage) {
+                    // Optimization: Background commit
+                    this.state.checkpointTracker
+                        ?.commit()
+                        .then(async (commitHash) => {
+                            if (commitHash) {
+                                targetMessage.lastCheckpointHash = commitHash
+                                await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
+                            }
+                        })
+                        .catch((error) => {
+                            Logger.error(
+                                `[TaskCheckpointManager] Failed to create checkpoint commit for task ${this.task.taskId}:`,
+                                error,
+                            )
+                        })
+                }
+            } else {
+                // attempt_completion messages are special
+                // First check last 3 messages to see if we already have a recent completion checkpoint
+                // If we do, skip creating a duplicate checkpoint
+                const lastFivediracMessages = this.services.messageStateHandler.getDiracMessages().slice(-3)
+                const lastCompletionResultMessage = findLast(
+                    lastFivediracMessages,
+                    (m) => m.content.type === "card" && m.content.card.header === "Completion Result"
+                )
+                if (lastCompletionResultMessage?.lastCheckpointHash) {
+                    Logger.log("Completion checkpoint already exists, skipping duplicate checkpoint creation")
+                    return
+                }
+
+                // For attempt_completion, commit then update the completion_result message with the checkpoint hash
+                if (this.state.checkpointTracker) {
+                    const commitHash = await this.state.checkpointTracker.commit()
+
+                    // If a completionMessageId is provided, update that specific message with the checkpoint hash
+                    if (completionMessageId) {
+                        const targetMessage = this.services.messageStateHandler
+                            .getDiracMessages()
+                            .find((m) => m.id === completionMessageId)
+                        if (targetMessage) {
+                            targetMessage.lastCheckpointHash = commitHash
+                            await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
+                        }
+                    } else {
+                        // Fallback to findLast if no ID provided - update the last completion_result message
+                        if (lastCompletionResultMessage) {
+                            lastCompletionResultMessage.lastCheckpointHash = commitHash
+                            await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
+                        }
+                    }
+                } else {
+                    Logger.error(
+                        `[TaskCheckpointManager] Checkpoint tracker does not exist and could not be initialized for attempt completion for task ${this.task.taskId}`
+                    )
+                }
+            }
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+            Logger.error(`[TaskCheckpointManager] Failed to save checkpoint for task ${this.task.taskId}:`, errorMessage)
+        }
+    }
+
+
+    /**
+     * Restores a checkpoint by message ID
+     * @param messageId - ID of the message to restore to
+     * @param restoreType - Type of restoration (task, workspace, or both)
+     * @param offset - Optional offset for the message index
+     * @returns checkpointManagerStateUpdate with any state changes that need to be applied
+     */
+    async restoreCheckpoint(
+        messageId: string,
+        restoreType: DiracCheckpointRestore,
+        offset?: number
+    ): Promise<CheckpointRestoreStateUpdate> {
+        try {
+            const diracMessages = this.services.messageStateHandler.getDiracMessages()
+            const messageIndex = diracMessages.findIndex((m) => m.id === messageId) - (offset || 0)
+            // Find the last message before messageIndex that has a lastCheckpointHash
+            const lastHashIndex = findLastIndex(diracMessages.slice(0, messageIndex), (m) => m.lastCheckpointHash !== undefined)
+            const message = diracMessages[messageIndex]
+            const lastMessageWithHash = diracMessages[lastHashIndex]
+
+            if (!message) {
+                Logger.error(`[TaskCheckpointManager] Message not found for id ${messageId} in task ${this.task.taskId}`)
+                return {}
+            }
+
+            let didWorkspaceRestoreFail = false
+
+            switch (restoreType) {
+                case "task":
+                    break
+                case "taskAndWorkspace":
+                case "workspace":
+                    if (!this.config.enableCheckpoints) {
+                        const errorMessage = "Checkpoints are disabled in settings."
+                        Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
+                        HostProvider.window.showMessage({
+                            type: ShowMessageType.ERROR,
+                            message: errorMessage,
+                        })
+                        didWorkspaceRestoreFail = true
+                        break
+                    }
+
+                    if (!this.state.checkpointTracker && !this.state.checkpointManagerErrorMessage) {
+                        try {
+                            const workspacePath = await this.getWorkspacePath()
+                            this.state.checkpointTracker = await CheckpointTracker.create(
+                                this.task.taskId,
+                                this.config.enableCheckpoints,
+                                workspacePath
+                            )
+                            this.services.messageStateHandler.setCheckpointTracker(this.state.checkpointTracker)
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+                            Logger.error(
+                                `[TaskCheckpointManager] Failed to initialize checkpoint tracker for task ${this.task.taskId}:`,
+                                errorMessage
+                            )
+                            this.state.checkpointManagerErrorMessage = errorMessage
+                            HostProvider.window.showMessage({
+                                type: ShowMessageType.ERROR,
+                                message: errorMessage,
+                            })
+                            didWorkspaceRestoreFail = true
+                        }
+                    }
+
+                    if (message.lastCheckpointHash && this.state.checkpointTracker) {
+                        try {
+                            await this.state.checkpointTracker.resetHead(message.lastCheckpointHash)
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+                            Logger.error(
+                                `[TaskCheckpointManager] Failed to restore checkpoint for task ${this.task.taskId}:`,
+                                errorMessage
+                            )
+                            HostProvider.window.showMessage({
+                                type: ShowMessageType.ERROR,
+                                message: "Failed to restore checkpoint: " + errorMessage,
+                            })
+                            didWorkspaceRestoreFail = true
+                        }
+                    } else if (offset && lastMessageWithHash.lastCheckpointHash && this.state.checkpointTracker) {
+                        try {
+                            await this.state.checkpointTracker.resetHead(lastMessageWithHash.lastCheckpointHash)
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+                            Logger.error(
+                                `[TaskCheckpointManager] Failed to restore offset checkpoint for task ${this.task.taskId}:`,
+                                errorMessage
+                            )
+                            HostProvider.window.showMessage({
+                                type: ShowMessageType.ERROR,
+                                message: "Failed to restore offset checkpoint: " + errorMessage,
+                            })
+                            didWorkspaceRestoreFail = true
+                        }
+                    } else if (!offset && lastMessageWithHash.lastCheckpointHash && this.state.checkpointTracker) {
+                        // Fallback: restore to most recent checkpoint when target message has no checkpoint hash
+                        Logger.warn(
+                            `[TaskCheckpointManager] Message ${messageId} has no checkpoint hash, falling back to previous checkpoint for task ${this.task.taskId}`
+                        )
+                        try {
+                            await this.state.checkpointTracker.resetHead(lastMessageWithHash.lastCheckpointHash)
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+                            Logger.error(
+                                `[TaskCheckpointManager] Failed to restore fallback checkpoint for task ${this.task.taskId}:`,
+                                errorMessage
+                            )
+                            HostProvider.window.showMessage({
+                                type: ShowMessageType.ERROR,
+                                message: "Failed to restore checkpoint: " + errorMessage,
+                            })
+                            didWorkspaceRestoreFail = true
+                        }
+                    } else {
+                        const errorMessage = "Failed to restore checkpoint: No valid checkpoint hash found"
+                        Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
+                        HostProvider.window.showMessage({
+                            type: ShowMessageType.ERROR,
+                            message: errorMessage,
+                        })
+                        didWorkspaceRestoreFail = true
+                    }
+                    break
+            }
+
+            const checkpointManagerStateUpdate: CheckpointRestoreStateUpdate = {}
+
+            if (!didWorkspaceRestoreFail) {
+                await this.handleSuccessfulRestore(restoreType, message, messageIndex, messageId)
+
+                // Collect state updates
+                if (this.state.conversationHistoryDeletedRange !== undefined) {
+                    checkpointManagerStateUpdate.conversationHistoryDeletedRange = this.state.conversationHistoryDeletedRange
+                }
+            } else {
+                sendRelinquishControlEvent()
+
+                if (this.state.checkpointManagerErrorMessage !== undefined) {
+                    checkpointManagerStateUpdate.checkpointManagerErrorMessage = this.state.checkpointManagerErrorMessage
+                }
+            }
+
+            return checkpointManagerStateUpdate
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+            Logger.error(`[TaskCheckpointManager] Failed to restore checkpoint for task ${this.task.taskId}:`, errorMessage)
+            sendRelinquishControlEvent()
+            return {
+                checkpointManagerErrorMessage: errorMessage,
+            }
+        }
+    }
+
+
+    /**
+     * Presents a multi-file diff view between checkpoints
+     * @param messageId - ID of the message to show diff for
+     * @param seeNewChangesSinceLastTaskCompletion - Whether to show changes since last completion
+     */
+    async presentMultifileDiff(messageId: string, seeNewChangesSinceLastTaskCompletion: boolean): Promise<void> {
+        const relinquishButton = () => {
+            sendRelinquishControlEvent()
+        }
+
+        try {
+            if (!this.config.enableCheckpoints) {
+                const errorMessage = "Checkpoints are disabled in settings. Cannot show diff."
+                Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
+                HostProvider.window.showMessage({
+                    type: ShowMessageType.INFORMATION,
+                    message: errorMessage,
+                })
+                relinquishButton()
+                return
+            }
+
+            Logger.log(`[TaskCheckpointManager] presentMultifileDiff for task ${this.task.taskId}, messageId: ${messageId}`)
+            const diracMessages = this.services.messageStateHandler.getDiracMessages()
+            const messageIndex = diracMessages.findIndex((m) => m.id === messageId)
+            const message = diracMessages[messageIndex]
+            if (!message) {
+                Logger.error(`[TaskCheckpointManager] Message not found for id ${messageId} in task ${this.task.taskId}`)
+                relinquishButton()
+                return
+            }
+            const hash = message.lastCheckpointHash
+            if (!hash) {
+                Logger.error(
+                    `[TaskCheckpointManager] No checkpoint hash found for message ${messageId} in task ${this.task.taskId}`
+                )
+                relinquishButton()
+                return
+            }
+
+            // Initialize checkpoint tracker if needed
+            if (!this.state.checkpointTracker && this.config.enableCheckpoints && !this.state.checkpointManagerErrorMessage) {
+                try {
+                    const workspacePath = await this.getWorkspacePath()
+                    this.state.checkpointTracker = await CheckpointTracker.create(
+                        this.task.taskId,
+                        this.config.enableCheckpoints,
+                        workspacePath
+                    )
+                    this.services.messageStateHandler.setCheckpointTracker(this.state.checkpointTracker)
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : "Unknown error"
+                    Logger.error(
+                        `[TaskCheckpointManager] Failed to initialize checkpoint tracker for task ${this.task.taskId}:`,
+                        errorMessage
+                    )
+                    this.state.checkpointManagerErrorMessage = errorMessage
+                    HostProvider.window.showMessage({
+                        type: ShowMessageType.ERROR,
+                        message: errorMessage,
+                    })
+                    relinquishButton()
+                    return
+                }
+            }
+
+            if (!this.state.checkpointTracker) {
+                Logger.error(`[TaskCheckpointManager] Checkpoint tracker not available for task ${this.task.taskId}`)
+                HostProvider.window.showMessage({
+                    type: ShowMessageType.ERROR,
+                    message: "Checkpoint tracker not available",
+                })
+                relinquishButton()
+                return
+            }
+
+            let changedFiles:
+                | {
+                    relativePath: string
+                    absolutePath: string
+                    before: string
+                    after: string
+                }[]
+                | undefined
+
+            if (seeNewChangesSinceLastTaskCompletion) {
+                // Get last task completed
+                const lastTaskCompletedMessageCheckpointHash = findLast(
+                    this.services.messageStateHandler.getDiracMessages().slice(0, messageIndex),
+                    (m) => m.content.type === "card" && m.content.card.header === "Completion Result"
+                )?.lastCheckpointHash
+
+                // This value *should* always exist
+                const firstCheckpointMessageCheckpointHash = this.services.messageStateHandler
+                    .getDiracMessages()
+                    .find((m) => m.content.type === "checkpoint")?.lastCheckpointHash
+
+                const previousCheckpointHash = lastTaskCompletedMessageCheckpointHash || firstCheckpointMessageCheckpointHash
+
+                if (!previousCheckpointHash) {
+                    const errorMessage = "Unexpected error: No checkpoint hash found"
+                    Logger.error(`[TaskCheckpointManager] ${errorMessage} for task ${this.task.taskId}`)
+                    HostProvider.window.showMessage({
+                        type: ShowMessageType.ERROR,
+                        message: errorMessage,
+                    })
+                    relinquishButton()
+                    return
+                }
+
+                // Get changed files between current state and commit
+                changedFiles = await this.state.checkpointTracker.getDiffSet(previousCheckpointHash, hash)
+                if (!changedFiles?.length) {
+                    HostProvider.window.showMessage({
+                        type: ShowMessageType.INFORMATION,
+                        message: "No changes found",
+                    })
+                    relinquishButton()
+                    return
+                }
+            } else {
+                // Get changed files between current state and commit
+                changedFiles = await this.state.checkpointTracker.getDiffSet(hash)
+                if (!changedFiles?.length) {
+                    HostProvider.window.showMessage({
+                        type: ShowMessageType.INFORMATION,
+                        message: "No changes found",
+                    })
+                    relinquishButton()
+                    return
+                }
+            }
+
+            // Open multi-diff editor
+            const title = seeNewChangesSinceLastTaskCompletion ? "New changes" : "Changes since snapshot"
+            const diffs = changedFiles.map((file) => ({
+                filePath: file.absolutePath,
+                leftContent: file.before,
+                rightContent: file.after,
+            }))
+            await HostProvider.diff.openMultiFileDiff({ title, diffs })
+
+            relinquishButton()
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+            Logger.error(`[TaskCheckpointManager] Failed to present multifile diff for task ${this.task.taskId}:`, errorMessage)
+            HostProvider.window.showMessage({
+                type: ShowMessageType.ERROR,
+                message: "Failed to retrieve diff set: " + errorMessage,
+            })
+            relinquishButton()
+        }
+    }
+
+
+    /**
+     * Creates a checkpoint commit in the underlying tracker
+     * @returns Promise<string | undefined> The created commit hash, or undefined if failed
+     */
+    async commit(): Promise<string | undefined> {
+        try {
+            if (!this.config.enableCheckpoints) {
+                return undefined
+            }
+
+            if (!this.state.checkpointTracker) {
+                await this.checkpointTrackerCheckAndInit()
+            }
+
+            if (!this.state.checkpointTracker) {
+                Logger.error(`[TaskCheckpointManager] Checkpoint tracker not available for commit in task ${this.task.taskId}`)
+                return undefined
+            }
+
+            return await this.state.checkpointTracker.commit()
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+            Logger.error(`[TaskCheckpointManager] Failed to create checkpoint commit for task ${this.task.taskId}:`, errorMessage)
+            return undefined
+        }
+    }
+
+    /**
+     * Checks if the latest task completion has new changes
+     * @returns Promise<boolean> - True if there are new changes since last completion
+     */
+    async doesLatestTaskCompletionHaveNewChanges(): Promise<boolean> {
+        try {
+            if (!this.config.enableCheckpoints) {
+                return false
+            }
+
+            const diracMessages = this.services.messageStateHandler.getDiracMessages()
+            const messageIndex = findLastIndex(
+                diracMessages,
+                (m) => m.content.type === "card" && m.content.card.header === "Completion Result"
+            )
+            const message = diracMessages[messageIndex]
+            if (!message) {
+                Logger.error(`[TaskCheckpointManager] Completion message not found for task ${this.task.taskId}`)
+                return false
+            }
+            const hash = message.lastCheckpointHash
+            if (!hash) {
+                Logger.error(`[TaskCheckpointManager] No checkpoint hash found for completion message in task ${this.task.taskId}`)
+                return false
+            }
+
+            if (this.config.enableCheckpoints && !this.state.checkpointTracker && !this.state.checkpointManagerErrorMessage) {
+                try {
+                    const workspacePath = await this.getWorkspacePath()
+                    this.state.checkpointTracker = await CheckpointTracker.create(
+                        this.task.taskId,
+                        this.config.enableCheckpoints,
+                        workspacePath
+                    )
+                    this.services.messageStateHandler.setCheckpointTracker(this.state.checkpointTracker)
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : "Unknown error"
+                    Logger.error(
+                        `[TaskCheckpointManager] Failed to initialize checkpoint tracker for task ${this.task.taskId}:`,
+                        errorMessage
+                    )
+                    await this.setcheckpointManagerErrorMessage(errorMessage)
+                    return false
+                }
+            }
+
+            if (!this.state.checkpointTracker) {
+                Logger.error(`[TaskCheckpointManager] Checkpoint tracker not available for task ${this.task.taskId}`)
+                return false
+            }
+
+            // Get last task completed
+            const lastTaskCompletedMessage = findLast(
+                this.services.messageStateHandler.getDiracMessages().slice(0, messageIndex),
+                (m) => m.content.type === "card" && m.content.card.header === "Completion Result"
+            )
+
+            // Get last task completed
+            const lastTaskCompletedMessageCheckpointHash = lastTaskCompletedMessage?.lastCheckpointHash
+
+            // This value *should* always exist
+            const firstCheckpointMessageCheckpointHash = this.services.messageStateHandler
+                .getDiracMessages()
+                .find((m) => m.content.type === "checkpoint")?.lastCheckpointHash
+
+            const previousCheckpointHash = lastTaskCompletedMessageCheckpointHash || firstCheckpointMessageCheckpointHash
+
+            if (!previousCheckpointHash) {
+                Logger.error(`[TaskCheckpointManager] No previous checkpoint hash found for task ${this.task.taskId}`)
+                return false
+            }
+
+            // Get count of changed files between current state and commit
+            const changedFilesCount = (await this.state.checkpointTracker.getDiffCount(previousCheckpointHash, hash)) || 0
+            return changedFilesCount > 0
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+            Logger.error(`[TaskCheckpointManager] Failed to check for new changes in task ${this.task.taskId}:`, errorMessage)
+            return false
+        }
+    }
+
+
+    /**
+     * Handles the successful restoration logic for different restore types
+     */
+    private async handleSuccessfulRestore(
+        restoreType: DiracCheckpointRestore,
+        message: DiracMessage,
+        messageIndex: number,
+        messageId: string
+    ): Promise<void> {
+        switch (restoreType) {
+            case "task":
+            case "taskAndWorkspace":
+                // Update conversation history deleted range in our state
+                this.state.conversationHistoryDeletedRange = message.conversationHistoryDeletedRange
+                this.taskState.conversationHistoryDeletedRange = message.conversationHistoryDeletedRange
+
+                const apiConversationHistory = this.services.messageStateHandler.getApiConversationHistory()
+                const newConversationHistory = apiConversationHistory.slice(0, (message.conversationHistoryIndex || 0) + 2) // +1 since this index corresponds to the last user message, and another +1 since slice end index is exclusive
+                await this.services.messageStateHandler.overwriteApiConversationHistory(newConversationHistory)
+
+                // aggregate deleted api reqs info so we don't lose costs/tokens
+                const diracMessages = this.services.messageStateHandler.getDiracMessages()
+                const deletedMessages = diracMessages.slice(messageIndex + 1)
+                const deletedApiReqsMetrics = getApiMetrics(combineCardSequences(deletedMessages))
+
+                // Detect files edited after this message timestamp for file context warning
+                // Only needed for task-only restores when a user edits a message or restores the task context, but not the files.
+                if (restoreType === "task") {
+                    const filesEditedAfterMessage = await this.services.fileContextTracker.detectFilesEditedAfterMessage(
+                        message.ts,
+                        deletedMessages
+                    )
+                    if (filesEditedAfterMessage.length > 0) {
+                        await this.services.fileContextTracker.storePendingFileContextWarning(filesEditedAfterMessage)
+                    }
+                }
+
+                const newDiracMessages = diracMessages.slice(0, messageIndex + 1)
+                await this.services.messageStateHandler.overwriteDiracMessages(newDiracMessages) // calls saveDiracMessages which saves historyItem
+
+                await this.callbacks.taskMessenger.upsertApiStatus({
+                    tokensIn: 0,
+                    tokensOut: 0,
+                    cacheWrites: 0,
+                    cacheReads: 0,
+                    cost: deletedApiReqsMetrics.totalCost,
+                    deletedMetrics: {
+                        tokensIn: deletedApiReqsMetrics.totalTokensIn,
+                        tokensOut: deletedApiReqsMetrics.totalTokensOut,
+                        cacheWrites: deletedApiReqsMetrics.totalCacheWrites,
+                        cacheReads: deletedApiReqsMetrics.totalCacheReads,
+                    },
+                })
+                break
+            case "workspace":
+                break
+        }
+
+        switch (restoreType) {
+            case "task":
+                HostProvider.window.showMessage({
+                    type: ShowMessageType.INFORMATION,
+                    message: "Task messages have been restored to the checkpoint",
+                })
+                break
+            case "workspace":
+                HostProvider.window.showMessage({
+                    type: ShowMessageType.INFORMATION,
+                    message: "Workspace files have been restored to the checkpoint",
+                })
+                break
+            case "taskAndWorkspace":
+                HostProvider.window.showMessage({
+                    type: ShowMessageType.INFORMATION,
+                    message: "Task and workspace have been restored to the checkpoint",
+                })
+                break
+        }
+
+        if (restoreType !== "task") {
+            // Set isCheckpointCheckedOut flag on the message
+            // Find all messages with checkpoint hashes
+            const checkpointMessages = this.services.messageStateHandler
+                .getDiracMessages()
+                .filter((m) => m.lastCheckpointHash)
+            const currentMessageIndex = checkpointMessages.findIndex((m) => m.id === messageId)
+
+            // Set isCheckpointCheckedOut to false for all checkpoint messages
+            checkpointMessages.forEach((m, i) => {
+                m.isCheckpointCheckedOut = i === currentMessageIndex
+            })
+        }
+
+        await this.services.messageStateHandler.saveDiracMessagesAndUpdateHistory()
+
+        // Cancel and reinitialize the task to get updated messages
+        await this.callbacks.cancelTask()
+        // Reset transient state after successful restore
+        await this.callbacks.resetTransientState()
+
+    }
+
+
+    // ============================================================================
+    // State management - interfaces for updating internal state
+    // ============================================================================
+
+    /**
+     * Checks for an active checkpoint tracker instance, creates if needed
+     * Uses promise-based synchronization to prevent race conditions when called concurrently
+     */
+    async checkpointTrackerCheckAndInit(): Promise<CheckpointTracker | undefined> {
+        // If tracker already exists or there was an error, return immediately
+        if (this.state.checkpointTracker) {
+            return this.state.checkpointTracker
+        }
+
+        // If initialization is already in progress, wait for it to complete
+        if (this.state.checkpointTrackerInitPromise) {
+            return await this.state.checkpointTrackerInitPromise
+        }
+
+        // Start initialization and store the promise to prevent concurrent attempts
+        this.state.checkpointTrackerInitPromise = this.initializeCheckpointTracker()
+
+        try {
+            const tracker = await this.state.checkpointTrackerInitPromise
+            return tracker
+        } finally {
+            // Clear the promise once initialization is complete (success or failure)
+            this.state.checkpointTrackerInitPromise = undefined
+        }
+    }
+
+    /**
+     * Internal method to actually create the checkpoint tracker
+     */
+    private async initializeCheckpointTracker(): Promise<CheckpointTracker | undefined> {
+        // Warning Timer - If checkpoints take a while to initialize, show a warning message
+        let checkpointsWarningTimer: NodeJS.Timeout | null = null
+        let checkpointsWarningShown = false
+
+        try {
+            checkpointsWarningTimer = setTimeout(async () => {
+                if (!checkpointsWarningShown) {
+                    checkpointsWarningShown = true
+                    await this.setcheckpointManagerErrorMessage(
+                        "Checkpoints are taking longer than expected to initialize. Working in a large repository? Consider re-opening Dirac in a project that uses git, or disabling checkpoints.",
+                    )
+                }
+            }, 7_000)
+
+            // Timeout - If checkpoints take too long to initialize, warn user and disable checkpoints for the task
+            const workspacePath = await this.getWorkspacePath()
+            const tracker = await pTimeout(
+                CheckpointTracker.create(this.task.taskId, this.config.enableCheckpoints, workspacePath),
+                {
+                    milliseconds: 15_000,
+                    message:
+                        "Checkpoints taking too long to initialize. Consider re-opening Dirac in a project that uses git, or disabling checkpoints.",
+                },
+            )
+
+            // Update the state with the created tracker
+            this.state.checkpointTracker = tracker
+            return tracker
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "Unknown error"
+            Logger.error("Failed to initialize checkpoint tracker:", errorMessage)
+
+            // If the error was a timeout, we disable all checkpoint operations for the rest of the task
+            if (errorMessage.includes("Checkpoints taking too long to initialize")) {
+                await this.setcheckpointManagerErrorMessage(
+                    "Checkpoints initialization timed out. Consider re-opening Dirac in a project that uses git, or disabling checkpoints.",
+                )
+            } else {
+                await this.setcheckpointManagerErrorMessage(errorMessage)
+            }
+            return undefined
+        } finally {
+            // Always clean up the timer to prevent memory leaks
+            if (checkpointsWarningTimer) {
+                clearTimeout(checkpointsWarningTimer)
+                checkpointsWarningTimer = null
+            }
+        }
+    }
+
+    /**
+     * Updates the checkpoint tracker instance
+     */
+    setCheckpointTracker(checkpointTracker: CheckpointTracker | undefined): void {
+        this.state.checkpointTracker = checkpointTracker
+    }
+
+    /**
+     * Updates the checkpoint tracker error message and posts to webview
+     */
+    async setcheckpointManagerErrorMessage(errorMessage: string | undefined): Promise<void> {
+        this.state.checkpointManagerErrorMessage = errorMessage
+        this.taskState.checkpointManagerErrorMessage = errorMessage
+        // Post state to webview so users can see the error message immediately
+        try {
+            await this.callbacks.postStateToWebview()
+        } catch (error) {
+            Logger.error("Failed to post state to webview after checkpoint error:", error)
+        }
+        // TODO - Future telemetry event capture here
+    }
+
+    /**
+     * Updates the conversation history deleted range
+     */
+    updateConversationHistoryDeletedRange(range: [number, number] | undefined): void {
+        this.state.conversationHistoryDeletedRange = range
+        // TODO - Future telemetry event capture here
+    }
+
+    // ============================================================================
+    // Internal utilities - Private helpers for checkpoint operations
+    // ============================================================================
+
+    /**
+     * Gets the workspace path from WorkspaceRootManager when available, otherwise falls back to CheckpointUtils
+     * @returns Promise<string> The workspace path to use for checkpoint operations
+     */
+    private async getWorkspacePath(): Promise<string> {
+        // Try to use the centralized WorkspaceRootManager first
+        if (this.services.workspaceManager) {
+            try {
+                const primaryRoot = this.services.workspaceManager.getPrimaryRoot()
+                if (primaryRoot) {
+                    return primaryRoot.path
+                }
+                Logger.warn(`[TaskCheckpointManager] WorkspaceRootManager returned no primary root for task ${this.task.taskId}`)
+            } catch (error) {
+                Logger.warn(
+                    `[TaskCheckpointManager] Failed to get workspace path from WorkspaceRootManager for task ${this.task.taskId}:`,
+                    error,
+                )
+            }
+        }
+
+        // Fallback to the legacy CheckpointUtils implementation
+        const { getWorkingDirectory: getWorkingDirectoryImpl } = await import("./CheckpointUtils")
+        return getWorkingDirectoryImpl()
+    }
+
+    /**
+     * Provides read-only access to current state for internal operations
+     */
+    //private get currentState(): Readonly<CheckpointManagerInternalState> {
+    //	return Object.freeze({ ...this.state })
+    //}
+
+    /**
+     * Provides public read-only access to current state
+     */
+    public getCurrentState(): Readonly<CheckpointManagerInternalState> {
+        return Object.freeze({ ...this.state })
+    }
+
+    /**
+     * Provides read-only access to dependencies for internal operations
+     */
+    //private get deps(): Readonly<CheckpointManagerDependencies> {
+    //	return this.dependencies
+    //}
 }
 
 // ============================================================================
@@ -913,11 +919,11 @@ export class TaskCheckpointManager implements ICheckpointManager {
  * Creates a new TaskCheckpointManager instance
  */
 export function createTaskCheckpointManager(
-	task: CheckpointManagerTask,
-	config: CheckpointManagerConfig,
-	services: CheckpointManagerServices,
-	callbacks: CheckpointManagerCallbacks,
-	initialState: CheckpointManagerInternalState,
+    task: CheckpointManagerTask,
+    config: CheckpointManagerConfig,
+    services: CheckpointManagerServices,
+    callbacks: CheckpointManagerCallbacks,
+    initialState: CheckpointManagerInternalState,
 ): TaskCheckpointManager {
-	return new TaskCheckpointManager(task, config, services, callbacks, initialState)
+    return new TaskCheckpointManager(task, config, services, callbacks, initialState)
 }
